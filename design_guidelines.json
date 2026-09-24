@@ -1,0 +1,210 @@
+{
+  "project_name": "SHARPMARKET / 0xSHARP (Polymarket Sports & Esports Smart Money Terminal)",
+  "design_archetype": "The Tactical Trading Terminal (Swiss High-Contrast + Dark Mode Precision)",
+  "emotional_tone": "Technical, razor-sharp, analytical, high-conviction, disciplined alpha without fluff",
+  "app_type": "Data-Dense Analytics & Trading Terminal (Dashboard)",
+  "theme": "dark",
+  "typography": {
+    "headline_font": "Space Mono, JetBrains Mono, monospace",
+    "data_font": "JetBrains Mono, Roboto Mono, monospace",
+    "body_font": "Plus Jakarta Sans, -apple-system, BlinkMacSystemFont, sans-serif",
+    "google_fonts_import": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap",
+    "hierarchy": {
+      "h1_terminal_title": "text-2xl sm:text-3xl font-mono font-bold tracking-tight uppercase",
+      "h2_section_heading": "text-lg sm:text-xl font-mono font-semibold tracking-normal uppercase text-zinc-100",
+      "h3_card_title": "text-sm sm:text-base font-mono font-semibold uppercase tracking-wider text-zinc-300",
+      "metric_hero_large": "text-3xl sm:text-4xl font-mono font-black tracking-tight",
+      "metric_medium": "text-xl sm:text-2xl font-mono font-bold tracking-tight",
+      "metric_label": "text-[10px] sm:text-[11px] font-mono uppercase tracking-[0.16em] text-zinc-400",
+      "body": "text-xs sm:text-sm font-sans leading-relaxed text-zinc-300",
+      "mono_data": "text-xs font-mono tabular-nums tracking-tight",
+      "badge": "text-[10px] sm:text-[11px] font-mono font-semibold uppercase px-2 py-0.5 tracking-wider"
+    },
+    "rules": [
+      "Never use Inter for headlines or badges. Use JetBrains Mono for all numeric tables, meters, wallets, and badges.",
+      "Tabular figures ('tabular-nums font-mono') are mandatory on every price, volume, percentage, score, and address.",
+      "Keep uppercase labels with generous tracking: 'tracking-widest text-[11px]' to signal command-center status."
+    ]
+  },
+  "colors": {
+    "background_canvas": "#07090E",
+    "background_surface_1": "#0D1117",
+    "background_surface_2": "#141A23",
+    "background_surface_hover": "#1C2431",
+    "borders": {
+      "subtle": "#1E2633",
+      "active": "#2A3649",
+      "sharp_accent": "#00E599",
+      "danger_accent": "#FF3B5C"
+    },
+    "brand_signals": {
+      "smart_green_bull": "#00E599",
+      "smart_green_bg": "rgba(0, 229, 153, 0.08)",
+      "smart_green_border": "rgba(0, 229, 153, 0.3)",
+      "fade_red_bear": "#FF3B5C",
+      "fade_red_bg": "rgba(255, 59, 92, 0.08)",
+      "fade_red_border": "rgba(255, 59, 92, 0.3)",
+      "warning_amber": "#FFB020",
+      "cyan_sharp": "#00D2FF",
+      "electric_purple_whale": "#A855F7"
+    },
+    "wallet_categories": {
+      "SHARP": {
+        "text": "#00E599",
+        "bg": "rgba(0, 229, 153, 0.12)",
+        "border": "#00E599",
+        "desc": "High winrate, high ROI, positive expected value (+EV) bettor with strict edge"
+      },
+      "WHALE": {
+        "text": "#A855F7",
+        "bg": "rgba(168, 85, 247, 0.12)",
+        "border": "#A855F7",
+        "desc": "Massive position size ($50k+), moves orderbook depth and creates slippage"
+      },
+      "INSIDER_EARLY": {
+        "text": "#00D2FF",
+        "bg": "rgba(0, 210, 255, 0.12)",
+        "border": "#00D2FF",
+        "desc": "Enters hours before roster/injury leaks or pre-event line movement"
+      },
+      "MARKET_MAKER": {
+        "text": "#F59E0B",
+        "bg": "rgba(245, 158, 11, 0.12)",
+        "border": "#F59E0B",
+        "desc": "Two-sided liquidity provider, high frequency delta-neutral rebalancing"
+      },
+      "BOT": {
+        "text": "#64748B",
+        "bg": "rgba(100, 116, 139, 0.15)",
+        "border": "#475569",
+        "desc": "Automated contract execution, sub-second snipe of odds discrepancies"
+      },
+      "SCALPER": {
+        "text": "#FB7185",
+        "bg": "rgba(251, 113, 133, 0.12)",
+        "border": "#FB7185",
+        "desc": "Rapid turnaround, exits before resolution to lock 2-5% tick spreads"
+      },
+      "RETAIL_NOISE": {
+        "text": "#94A3B8",
+        "bg": "rgba(148, 163, 184, 0.08)",
+        "border": "#334155",
+        "desc": "Recreational, sentiment-driven underdog chasing or home-team bias"
+      }
+    },
+    "text": {
+      "primary": "#F1F5F9",
+      "secondary": "#94A3B8",
+      "muted": "#64748B",
+      "dim": "#334155"
+    }
+  },
+  "layout_and_grids": {
+    "container_type": "Mode B: High Density Trading Terminal with 1px hairline grid borders",
+    "structure": [
+      "1. Global Top Bar / Ticker: Live aggregate stats (Tracked Smart Volume, Sharp Bias % Yes vs No, 24h Resolved Markets, Active Bot Volume, Gas/Polygon status)",
+      "2. Primary Viewport Header: Market Sport Selector (ESPORTS primary with sub-pills: CS2, LoL, Dota2, Valorant; then Traditional: NFL, NBA, Premier League, UFC, Tennis)",
+      "3. Split Trading Deck:",
+      "   - Left Panel (col-span-12 lg:col-span-8): Markets Heatmap / Dense Table with Smart Money Strength Dual-Gauges (Yes vs No), Capital Split bar, Resolution Countdown, and 1-Click Detail Expand",
+      "   - Right Panel (col-span-12 lg:col-span-4): Deep Market Inspector (when market selected) OR Live Sharp Money Feed Tape (when browsing)",
+      "4. Dedicated Analytics Views (Tabbed/Navigable):",
+      "   - 'Markets Monitor' (Default Command Grid)",
+      "   - 'Sharp Leaderboard' (Ranked by Smart Score 0-100, Winrate, Hold-to-Resolution %)",
+      "   - 'Wallet Classifier Lab' (Inspect any address, see Bot vs Sharp diagnostics, Hold-to-Resolution radar)",
+      "   - 'Esports Deep Alpha' (Matchup odds vs Sharp book discrepancies)"
+    ],
+    "border_style": "1px solid #1E2633 with crisp nested boxes. Zero bubbly rounded corners; maximum rounded-sm (2px to 4px) to respect anti-predesk preference.",
+    "density_scale": "Padding p-2 to p-4 inside data cells; tight gap-2 or gap-3 with clear visual hierarchy."
+  },
+  "components_and_visual_enhancers": {
+    "smart_money_gauge": {
+      "component_name": "SmartMoneyStrengthMeter",
+      "description": "Blended 0-100 composite score calculated from: (ROI * 0.25) + (WinRate * 0.30) + (HoldToResolutionRatio * 0.20) + (RealizedPnLNormalized * 0.25).",
+      "visual": "Dual-sided horizontal differential bar: Left = YES Smart Score with neon green glow; Right = NO Smart Score with coral red glow. Center indicator flags the 'Net Alpha Lean' (+24 YES LEAN)."
+    },
+    "wallet_classification_badge": {
+      "component_name": "WalletBadge",
+      "description": "Monospace pill with category color stroke and micro icon indicator (e.g., ⚡ SHARP, 🐋 WHALE, 👁️ INSIDER, ⚙️ BOT, ⏱️ SCALPER, ⚖️ MM, 👤 RETAIL).",
+      "interaction": "Hover opens popover with instant wallet stats: 30D PnL, Winrate, Hold-to-Resolution %, Total Bets."
+    },
+    "capital_flow_breakdown": {
+      "component_name": "CapitalDistributionBar",
+      "description": "Multi-segmented color bar representing capital split across wallet types (e.g. 42% Sharp, 25% Whale, 18% MM, 15% Retail)."
+    },
+    "hold_vs_exit_radial": {
+      "component_name": "HoldToResolutionGauge",
+      "description": "Comparison indicator showing % of capital committed that holds to market resolution (high conviction) vs dumped early (scalper/panic exit)."
+    },
+    "ai_analyst_narrative": {
+      "component_name": "MarketIntelligenceNote",
+      "description": "Terminal-style intel wire: 'SMART MONEY INTEL: 4 Tier-1 Sharp wallets entered YES @ $0.48 after roster update. 82% hold-to-resolution historical bias.'"
+    }
+  },
+  "image_urls": {
+    "esports_hero_bg": "https://images.unsplash.com/photo-1767455471543-055dbc6c6700?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODh8MHwxfHNlYXJjaHwyfHxlc3BvcnRzJTIwdG91cm5hbWVudCUyMGdhbWluZyUyMGFyZW5hfGVufDB8fHx8MTc4ODk4ODg5Mnww&ixlib=rb-4.1.0&q=85",
+    "stadium_sports_bg": "https://images.unsplash.com/photo-1679391029864-d46f366a456b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODB8MHwxfHNlYXJjaHwxfHxzdGFkaXVtJTIwZmxvb2RsaWdodHMlMjBuaWdodHxlbnwwfHx8fDE3ODg5ODg4OTl8MA&ixlib=rb-4.1.0&q=85",
+    "arena_lights_subtle": "https://images.unsplash.com/photo-1706675780107-7c43cc487928?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODB8MHwxfHNlYXJjaHwyfHxzdGFkaXVtJTIwZmxvb2RsaWdodHMlMjBuaWdodHxlbnwwfHx8fDE3ODg5ODg4OTl8MA&ixlib=rb-4.1.0&q=85"
+  },
+  "data_testid_manifest": {
+    "global_nav": {
+      "terminal_logo": "terminal-logo",
+      "nav_markets": "nav-item-markets",
+      "nav_leaderboard": "nav-item-leaderboard",
+      "nav_wallet_classifier": "nav-item-wallet-classifier",
+      "nav_esports_deep": "nav-item-esports",
+      "search_input": "global-search-input",
+      "refresh_button": "terminal-refresh-btn"
+    },
+    "ticker_bar": {
+      "stat_total_volume": "ticker-total-volume",
+      "stat_tracked_wallets": "ticker-tracked-wallets",
+      "stat_sharp_accuracy": "ticker-sharp-accuracy",
+      "stat_esports_dominance": "ticker-esports-dominance"
+    },
+    "filters": {
+      "category_tab_esports": "filter-tab-esports",
+      "category_tab_all": "filter-tab-all",
+      "category_tab_soccer": "filter-tab-soccer",
+      "category_tab_nfl": "filter-tab-nfl",
+      "category_tab_nba": "filter-tab-nba",
+      "category_tab_mma": "filter-tab-mma",
+      "smart_score_filter": "filter-smart-score-slider",
+      "sort_selector": "filter-sort-select"
+    },
+    "market_list": {
+      "container": "markets-table-container",
+      "market_row": "market-row-item",
+      "smart_strength_gauge": "smart-money-strength-gauge",
+      "yes_price_pill": "market-yes-price",
+      "no_price_pill": "market-no-price",
+      "wallet_count_pill": "market-wallet-count",
+      "view_detail_button": "market-view-detail-btn"
+    },
+    "market_detail_modal_or_drawer": {
+      "detail_container": "market-detail-container",
+      "composite_score_badge": "detail-composite-score",
+      "capital_breakdown_bar": "detail-capital-distribution",
+      "hold_to_res_stat": "detail-hold-to-res-stat",
+      "ai_narrative_box": "detail-ai-narrative-summary",
+      "wallets_table": "detail-participating-wallets-table",
+      "wallet_row": "detail-wallet-row"
+    },
+    "wallet_classifier_view": {
+      "input_address": "wallet-inspect-input",
+      "inspect_button": "wallet-inspect-btn",
+      "score_card": "wallet-score-card",
+      "category_badge": "wallet-category-badge",
+      "hold_ratio_meter": "wallet-hold-ratio-meter"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow dark mode trading terminal aesthetic: deep obsidian/slate canvas (#07090E, #0D1117), crisp 1px borders (#1E2633), high-contrast data rendering.",
+    "Esports is the flagship market: seed rich realistic Esports markets (League of Legends Worlds, CS2 Major Copenhagen, Dota 2 The International, Valorant Champions, Rocket League RLCS) alongside high-stakes sports (Champions League, NBA Finals, Super Bowl, UFC).",
+    "Implement the Smart Money Strength algorithm explicitly: calculate Score out of 100 based on ROI, Hold-to-Resolution %, Win Rate, and PnL.",
+    "Implement comprehensive Wallet Classifications: Sharp, Whale, Insider/Early-Mover, Market Maker, Bot, Scalper, and Retail/Noise.",
+    "Every wallet in the detail view and leaderboard must display its classification badge, hold-to-resolution ratio (e.g. '88% Holds to End' vs 'Exits early in 2.1h'), winrate, and total volume.",
+    "Provide interactive tabs: 'Markets Grid', 'Sharp Leaderboard', 'Wallet Diagnostics / Classifier', and 'Esports Alpha Feed'.",
+    "Ensure every button, tab, card, input, and table row has its corresponding data-testid attribute from the manifest.",
+    "Ensure responsiveness: on mobile, convert wide tables into dense high-utility cards with preserved gauges; on desktop, utilize the full widescreen command deck."
+  ]
+}

@@ -1,0 +1,2 @@
+--extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+emergentintegrations==0.2.0
