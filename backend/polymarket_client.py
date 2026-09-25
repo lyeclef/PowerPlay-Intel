@@ -99,7 +99,11 @@ class PolymarketClient:
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(headers=HEADERS, timeout=30.0)
+            self._client = httpx.AsyncClient(
+                headers=HEADERS,
+                timeout=httpx.Timeout(20.0, connect=10.0),
+                limits=httpx.Limits(max_connections=50, max_keepalive_connections=25),
+            )
         return self._client
 
     async def close(self):
@@ -111,16 +115,24 @@ class PolymarketClient:
         client = await self._get_client()
         url = f"{base}{path}"
         for attempt in range(retries):
+            exc = None
+            resp = None
             async with self._sem:
                 try:
                     resp = await client.get(url, params=params)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("request error %s: %s", url, exc)
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
+                except Exception as e:  # noqa: BLE001
+                    exc = e
+            if exc is not None:
+                logger.warning("request error %s: %s", url, exc)
+                await asyncio.sleep(0.4 * (attempt + 1))
+                continue
             if resp.status_code == 429 or resp.status_code >= 500:
-                wait_sec = 1.0 * (attempt + 1)
-                await asyncio.sleep(wait_sec)
+                retry_after = resp.headers.get("retry-after")
+                try:
+                    wait_sec = float(retry_after) if retry_after else 1.0 * (attempt + 1)
+                except (ValueError, TypeError):
+                    wait_sec = 1.0 * (attempt + 1)
+                await asyncio.sleep(min(wait_sec, 8.0))
                 continue
             if resp.status_code == 200:
                 try:
@@ -191,7 +203,7 @@ class PolymarketClient:
             "sizeThreshold": 0, "includeArchived": "true",
         })
 
-    async def positions_paginated(self, user: str, pages: int = 10, size: int = 500):
+    async def positions_paginated(self, user: str, pages: int = 4, size: int = 500):
         out = []
         for page in range(pages):
             rows = await self.positions(user, size, page * size)
@@ -215,7 +227,7 @@ class PolymarketClient:
             DATA, "/activity", params
         )
 
-    async def activity_paginated(self, user: str, pages: int = 35, size: int = 500, min_days: float = 65.0):
+    async def activity_paginated(self, user: str, pages: int = 12, size: int = 500, min_days: float = 65.0):
         """Pull the wallet's activity ledger (TRADE + REDEEM + ...) via timestamp-based pagination.
         Using ?end=<timestamp-1> bypasses Polymarket's 5000 offset cap and allows high-volume traders
         to be tracked back 60+ days.

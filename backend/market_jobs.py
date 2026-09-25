@@ -7,7 +7,7 @@ log = logging.getLogger("market_jobs")
 
 
 class MarketJobs:
-    def __init__(self, runner, signature, timeout=150, max_pending=120):
+    def __init__(self, runner, signature, timeout=240, max_pending=120):
         self.runner, self.signature = runner, signature
         self.timeout, self.max_pending = timeout, max_pending
         self.jobs = {}
@@ -16,7 +16,7 @@ class MarketJobs:
 
     def start(self):
         if not self.workers:
-            self.workers = [asyncio.create_task(self._worker(lane)) for lane in (0, 0, 1)]
+            self.workers = [asyncio.create_task(self._worker(lane)) for lane in (0, 1)]
 
     async def close(self):
         for worker in self.workers:
@@ -82,6 +82,9 @@ class MarketJobs:
                 # A promoted queue entry or replaced job is never run twice.
                 if self.jobs.get(key) is not job or job["lane"] != lane or job["state"] != "waiting" or key[0] != self.signature():
                     continue
+                if lane == 0:
+                    while any(j.get("state") == "profiling" and j.get("lane") == 1 for j in self.jobs.values()):
+                        await asyncio.sleep(0.5)
                 job["state"] = "profiling"
                 job["progress"] = {"stage":"holders"}
 

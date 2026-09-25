@@ -91,7 +91,7 @@ market_jobs = MarketJobs(_run_market_job, tuning_config.signature)
 _market_index: dict[str, dict] = {}
 
 TAPE_MAX = 160
-TAPE_REFRESH = 15
+TAPE_REFRESH = 45
 HEAL_INTERVAL = 600  # background top-up cadence (s) to keep the leaderboard on the latest schema
 _tape: list[dict] = []
 _tape_updated: str | None = None
@@ -280,9 +280,9 @@ async def _build_tape():
             flat = await _fetch_flat_markets(cat, 30)
         except Exception:  # noqa: BLE001
             continue
-        for m in flat[:12]:
+        for m in flat[:6]:
             cond_markets.setdefault(m["id"], m)
-    conds = list(cond_markets.keys())[:40]
+    conds = list(cond_markets.keys())[:16]
     if not conds:
         return
 
@@ -388,7 +388,7 @@ async def _build_tape():
             logger.debug("Failed to process tape row: %s", row_exc)
             continue
 
-    for addr in list(dict.fromkeys(enqueue))[:6]:
+    for addr in list(dict.fromkeys(enqueue))[:2]:
         _spawn(get_or_classify_wallet(poly, db, addr))
 
     _tape = tape
@@ -521,7 +521,7 @@ async def markets(
     flat = await _fetch_flat_markets(category, max(limit, 30))
     events = group_by_event(flat)[:limit]
     await _attach_analyses(events)
-    await _warm_events(events, type)
+    await _warm_events(events, type, cap=6)
     return {"category": category, "type": type, "count": len(events), "events": events}
 
 

@@ -375,8 +375,8 @@ async def analyze_wallet(client, address, db=None):
     from sharp_evidence import build_evidence, deduplicate, sports_record
     address = address.lower()
     activity_res, positions_res, value = await asyncio.gather(
-        client.activity_paginated(address, pages=35, size=500),
-        client.positions_paginated(address, pages=10, size=500),
+        client.activity_paginated(address, pages=12, size=500),
+        client.positions_paginated(address, pages=4, size=500),
         client.value(address),
     )
     activity, capped = activity_res

@@ -22,6 +22,12 @@ WALLET_ANALYSIS_TIMEOUT = 75
 NEUTRAL_BAND = 4.0
 
 _wallet_locks = WeakValueDictionary()
+_wallet_classify_sem = asyncio.Semaphore(5)
+
+
+async def _guarded_classify_wallet(client, db, address):
+    async with _wallet_classify_sem:
+        return await asyncio.wait_for(get_or_classify_wallet(client, db, address), WALLET_ANALYSIS_TIMEOUT)
 
 
 def _f(x, default=0.0):
@@ -115,7 +121,7 @@ async def analyze_market(client, db, market, on_progress=None):
             continue
         if row:
             stale.add(i)
-        task = asyncio.create_task(asyncio.wait_for(get_or_classify_wallet(client, db, address), WALLET_ANALYSIS_TIMEOUT))
+        task = asyncio.create_task(_guarded_classify_wallet(client, db, address))
         tasks[task] = i
 
     async def publish(pending):
