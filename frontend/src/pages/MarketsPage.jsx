@@ -13,6 +13,7 @@ const TAB_TESTIDS = {
   all: "filter-tab-all",
   soccer: "filter-tab-soccer",
   nfl: "filter-tab-nfl",
+  cfb: "filter-tab-cfb",
   nba: "filter-tab-nba",
   mma: "filter-tab-mma",
 };
@@ -38,7 +39,7 @@ export default function MarketsPage() {
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["markets", category, marketType],
     queryFn: () => fetchMarkets(category, marketType, 30),
-    refetchInterval: 5000,
+    refetchInterval: 12000,
     enabled: !submitted,
   });
 
@@ -46,7 +47,7 @@ export default function MarketsPage() {
     queryKey: ["search", submitted],
     queryFn: () => searchMarkets(submitted, 24),
     enabled: !!submitted,
-    refetchInterval: 5000,
+    refetchInterval: 12000,
   });
 
   const esports = (categories || []).filter((c) => c.group === "esports");
@@ -78,7 +79,12 @@ export default function MarketsPage() {
     setSubmitted("");
   };
 
-  if (submitted ? searchError : isError) return <QueryError onRetry={submitted ? retrySearch : refetch} />;
+  const hasEvents = Boolean(events && events.length > 0);
+  const queryFailed = submitted ? searchError : isError;
+
+  if (queryFailed && !hasEvents) {
+    return <QueryError onRetry={submitted ? retrySearch : refetch} />;
+  }
 
   return (
     <div>
@@ -197,6 +203,15 @@ export default function MarketsPage() {
         </div>
       )}
 
+      {queryFailed && hasEvents && (
+        <div role="status" className="panel p-2.5 mb-4 flex items-center justify-between text-xs text-amber-300 border border-amber-500/30 bg-amber-500/10">
+          <span>Live connection hiccup · Showing saved figures</span>
+          <button type="button" onClick={submitted ? retrySearch : refetch} className="underline text-amber-200 hover:text-white font-semibold ml-2">
+            Retry now
+          </button>
+        </div>
+      )}
+
       {submitted && (
         <div className="mb-4 flex items-center gap-2">
           <span className="label-mono text-[10px] text-insider">
@@ -245,6 +260,7 @@ const TabGroup = ({ icon: Icon, label, cats, current, onPick, accent }) => (
       return (
         <button
           key={c.id}
+          title={c.title || c.label}
           data-testid={TAB_TESTIDS[c.id] || `filter-tab-${c.id}`}
           onClick={() => onPick(c.id)}
           className="label-mono text-[10px] px-2.5 py-1 rounded-sm border transition-colors"

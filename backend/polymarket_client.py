@@ -33,6 +33,7 @@ CATEGORY_DEFS = [
     {"id": "soccer", "label": "Soccer", "tag_slug": "soccer", "group": "sports"},
     {"id": "nba", "label": "NBA", "tag_slug": "nba", "group": "sports"},
     {"id": "nfl", "label": "NFL", "tag_slug": "nfl", "group": "sports"},
+    {"id": "cfb", "label": "CFB", "title": "College Football", "tag_slug": "cfb", "group": "sports"},
     {"id": "mlb", "label": "MLB", "tag_slug": "mlb", "group": "sports"},
     {"id": "mma", "label": "UFC / MMA", "tag_slug": "mma", "group": "sports"},
     {"id": "tennis", "label": "Tennis", "tag_slug": "tennis", "group": "sports"},
@@ -166,11 +167,28 @@ class PolymarketClient:
         )
         return data or []
 
-    async def search_events(self, q: str, limit: int = 30) -> list:
-        data = await self._get(GAMMA, "/public-search", {"q": q, "limit_per_type": limit})
-        if isinstance(data, dict):
-            return data.get("events") or []
-        return []
+    async def search_events(self, q: str, limit: int = 100) -> list:
+        # Fetch 2 pages of 50 concurrently to bypass Polymarket's heavy political/historical market clutter
+        p1, p2 = await asyncio.gather(
+            self._get(GAMMA, "/public-search", {"q": q, "limit_per_type": 50, "page": 1}),
+            self._get(GAMMA, "/public-search", {"q": q, "limit_per_type": 50, "page": 2}),
+            return_exceptions=True,
+        )
+        events = []
+        if isinstance(p1, dict) and p1.get("events"):
+            events.extend(p1["events"])
+        if isinstance(p2, dict) and p2.get("events"):
+            events.extend(p2["events"])
+        seen = set()
+        deduped = []
+        for e in events:
+            eid = e.get("id") or e.get("slug")
+            if eid and eid not in seen:
+                seen.add(eid)
+                deduped.append(e)
+            elif not eid:
+                deduped.append(e)
+        return deduped[:limit]
 
     async def market_metadata(self, condition_ids):
         # Gamma defaults to open markets, even with a condition_ids filter.

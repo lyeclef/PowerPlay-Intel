@@ -530,20 +530,60 @@ async def search(q: str = Query(..., max_length=200), limit: int = Query(20, ge=
     q = (q or "").strip()
     if len(q) < 2:
         return {"query": q, "events": []}
-    raw = await poly.search_events(q, limit=30)
-    allowed = {c["tag_slug"] for c in CATEGORY_DEFS} | {"sports", "esports", "games"}
+    raw = await poly.search_events(q, limit=100)
+    allowed = {c["tag_slug"] for c in CATEGORY_DEFS} | {
+        "sports", "esports", "games", "football", "college-football", "ncaaf",
+        "basketball", "baseball", "soccer", "tennis", "fighting", "boxing", "hockey",
+        "cfb", "cfb-gameday", "nfl", "nba", "mlb", "mma", "ufc"
+    }
+    sports_slug_prefixes = ("cfb-", "nfl-", "nba-", "mlb-", "cbb-", "epl-", "ucl-", "atp-", "wta-", "ufc-", "cs2-", "dota-", "lol-", "val-")
     scoped = []
     for e in raw:
-        tags = {t.get("slug") for t in (e.get("tags") or [])}
-        if tags and not (tags & allowed):
+        if e.get("closed") is True:
+            continue
+        tags = {t.get("slug") if isinstance(t, dict) else str(t) for t in (e.get("tags") or [])}
+        is_sports = bool(tags & allowed) or any(str(e.get("slug") or "").lower().startswith(p) for p in sports_slug_prefixes)
+        if not is_sports and tags:
             continue
         scoped.append(e)
+
     flat = normalize_markets_from_events(scoped, "search")
+
+    # Also search local memory cache so active live markets already loaded are never missed
+    q_lower = q.lower()
+    existing_conds = {m["id"] for m in flat}
+    for cat_id, entry in _markets_cache.items():
+        for m in entry.get("markets", []):
+            if m["id"] in existing_conds:
+                continue
+            title = (m.get("eventTitle") or "").lower()
+            question = (m.get("question") or "").lower()
+            slug = (m.get("slug") or "").lower()
+            if q_lower in title or q_lower in question or q_lower in slug:
+                flat.append(m)
+                existing_conds.add(m["id"])
+
     for m in flat:
         _market_index[m["id"]] = m
-    events = group_by_event(flat)[:limit]
+
+    events = group_by_event(flat)
+
+    # Rank events by relevance to query (exact word match in title > title substring > question match)
+    def _search_rank(ev):
+        title = (ev.get("title") or "").lower()
+        if re.search(r"\b" + re.escape(q_lower) + r"\b", title):
+            return (0, -ev.get("volume", 0))
+        if q_lower in title:
+            return (1, -ev.get("volume", 0))
+        if any(q_lower in (m.get("question") or "").lower() for m in ev.get("markets", [])):
+            return (2, -ev.get("volume", 0))
+        return (3, -ev.get("volume", 0))
+
+    events.sort(key=_search_rank)
+    events = events[:limit]
+
     await _attach_analyses(events)
-    await _warm_events(events, None)
+    await _warm_events(events, None, cap=4)
     return {"query": q, "count": len(events), "events": events}
 
 

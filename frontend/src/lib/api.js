@@ -22,7 +22,7 @@ export const searchMarkets = (q, limit = 20) =>
   api.get("/search", { params: { q, limit } }).then((r) => r.data);
 
 export const fetchMarketDetail = (id, retry = false) =>
-  api.get(`/markets/${id}`, { params: { retry }, timeout: 15000 }).then((r) => r.data);
+  api.get(`/markets/${id}`, { params: { retry }, timeout: 60000 }).then((r) => r.data);
 
 export const fetchWallet = (address) =>
   api.get(`/wallets/${address}`, { timeout: 180000 }).then((r) => r.data);
