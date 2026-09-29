@@ -142,7 +142,7 @@ def test_lifespan_cancels_workers_and_closes_clients(api, monkeypatch):
     async def run():
         async with server.app.router.lifespan_context(server.app):
             assert len(server._background_tasks) == 6
-            assert len(server.market_jobs.workers) == 3
+            assert len(server.market_jobs.workers) == 2
         assert not server._background_tasks
         assert not server.market_jobs.workers
         server.poly.close.assert_awaited_once()

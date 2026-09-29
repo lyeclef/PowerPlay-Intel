@@ -1,13 +1,14 @@
-import { Crosshair, Waves, ShieldCheck, ShieldQuestion, Scale, Bot, Timer, User, Search } from "lucide-react";
+import { Crosshair, Waves, ShieldCheck, ShieldQuestion, Scale, Bot, Timer, User, Search, Zap } from "lucide-react";
 export const WALLET_META = {
   PROVEN_SHARP: {label: "ELITE", color: "#00D2FF", icon: ShieldCheck, blurb: "Meets Sharp requirements with at least 300 resolved sports events across 180 days."},
   SHARP: {label: "SHARP", color: "#00E599", icon: Crosshair, blurb: "Sufficient sports track record with qualifying win rate, positive ROI, 90% holding and no automation exclusion."},
-  CANDIDATE: {label: "CANDIDATE", color: "#A7C4FF", icon: Search, blurb: "Promising holding and measured returns; building sample toward certified Sharp qualification."},
+  CANDIDATE: {label: "CANDIDATE", color: "#A7C4FF", icon: Search, blurb: "Promising holding, >=50% winrate and measured returns; building sample toward certified Sharp qualification."},
+  UNDERDOG_TRADER: {label: "UNDERDOG", color: "#F59E0B", icon: Zap, blurb: "Profitable plus-money bettor with sub-50% win rate but positive ROI and directional conviction."},
   RETAIL: {label: "CASUAL", color: "#64748B", icon: User, blurb: "Recreational or uncertified participant without verified statistical edge."},
   ACTIVE_TRADER: {label: "SCALPER", color: "#FB7185", icon: Timer, blurb: "Exits or hedges before resolution. Trading odds movements rather than holding sports outcomes."},
   PROBABLE_BOT: {label: "BOT", color: "#94A3B8", icon: Bot, blurb: "Multiple observed behavior groups confirm automation; excluded from Sharp ranking."},
   AUTOMATION_UNCERTAIN: {label: "AUTOMATION UNCERTAIN", color: "#FBBF24", icon: ShieldQuestion, blurb: "One strong behavior group needs review; public activity does not establish who operates the wallet."},
-  HEDGED_STYLE: {label: "MAKER", color: "#F59E0B", icon: Scale, blurb: "Substantial two-sided inventory resembles market making or spread capture, rather than directional betting."},
+  HEDGED_STYLE: {label: "MAKER", color: "#EAB308", icon: Scale, blurb: "Substantial two-sided inventory resembles market making or spread capture, rather than directional betting."},
   INSUFFICIENT_DATA: {label: "UNRANKED", color: "#94A3B8", icon: User, blurb: "Not enough usable evidence to classify or rank. Available measurements are preserved."},
   WHALE: {label: "WHALE", color: "#A855F7", icon: Waves, blurb: "Large observed size; this tag does not imply skill."},
 };
@@ -19,6 +20,7 @@ WALLET_META.CASUAL = WALLET_META.RETAIL;
 WALLET_META.BOT = WALLET_META.PROBABLE_BOT;
 WALLET_META.UNRANKED = WALLET_META.INSUFFICIENT_DATA;
 WALLET_META.CONVICTION_HOLDER = WALLET_META.RETAIL;
+WALLET_META.UNDERDOG = WALLET_META.UNDERDOG_TRADER;
 
 export const walletMeta = cat =>
   WALLET_META[cat] ||

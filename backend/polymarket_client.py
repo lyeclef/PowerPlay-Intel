@@ -94,16 +94,17 @@ def classify_market_type(question: str, outcomes=None, group_item_title=None) ->
 
 
 class PolymarketClient:
-    def __init__(self, concurrency: int = 10):
+    def __init__(self, concurrency: int = 15):
         self._client: Optional[httpx.AsyncClient] = None
         self._sem = asyncio.Semaphore(concurrency)
+        self._gamma_sem = asyncio.Semaphore(10)
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 headers=HEADERS,
-                timeout=httpx.Timeout(20.0, connect=10.0),
-                limits=httpx.Limits(max_connections=50, max_keepalive_connections=25),
+                timeout=httpx.Timeout(12.0, connect=5.0),
+                limits=httpx.Limits(max_connections=60, max_keepalive_connections=30),
             )
         return self._client
 
@@ -115,17 +116,18 @@ class PolymarketClient:
     async def _get(self, base: str, path: str, params: dict | None = None, retries: int = 5) -> Any:
         client = await self._get_client()
         url = f"{base}{path}"
+        sem = self._gamma_sem if base == GAMMA else self._sem
         for attempt in range(retries):
             exc = None
             resp = None
-            async with self._sem:
+            async with sem:
                 try:
                     resp = await client.get(url, params=params)
                 except Exception as e:  # noqa: BLE001
                     exc = e
             if exc is not None:
-                logger.warning("request error %s: %s", url, exc)
-                await asyncio.sleep(0.4 * (attempt + 1))
+                logger.warning("request error %s: %s (%s)", url, type(exc).__name__, exc)
+                await asyncio.sleep(0.3 * (attempt + 1))
                 continue
             if resp.status_code == 429 or resp.status_code >= 500:
                 retry_after = resp.headers.get("retry-after")
@@ -145,9 +147,7 @@ class PolymarketClient:
 
     async def _list(self, base, path, params):
         data = await self._get(base, path, params)
-        if data is None:
-            return []
-        if not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
+        if data is None or not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
             raise UpstreamError(f"Unexpected response shape from {path}")
         return data
 

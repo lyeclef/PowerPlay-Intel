@@ -80,7 +80,9 @@ async def upstream_error_handler(request, exc):
 
 api_router = APIRouter(prefix="/api")
 
-MARKETS_CACHE_TTL = 30
+MARKETS_CACHE_TTL = 60
+STATS_CACHE_TTL = 30
+_stats_cache = {"ts": 0, "data": None}
 ANALYSIS_TTL = 300
 _markets_cache: dict[str, dict] = {}
 async def _run_market_job(market, progress):
@@ -185,9 +187,16 @@ async def _fetch_flat_markets(category_id: str, n_events: int) -> list:
     if entry and (time.time() - entry["ts"]) < MARKETS_CACHE_TTL:
         markets = entry["markets"]
     else:
-        events = await poly.events(cat["tag_slug"], limit=max(n_events, 40))
-        markets = normalize_markets_from_events(events, category_id)
-        _markets_cache[category_id] = {"ts": time.time(), "markets": markets}
+        try:
+            events = await poly.events(cat["tag_slug"], limit=max(n_events, 40))
+            markets = normalize_markets_from_events(events, category_id)
+            _markets_cache[category_id] = {"ts": time.time(), "markets": markets}
+        except Exception as exc:
+            if entry and entry.get("markets"):
+                logger.warning("Upstream events fetch failed for %s, falling back to cached markets: %s", category_id, exc)
+                markets = entry["markets"]
+            else:
+                raise
     for m in markets:
         _market_index[m["id"]] = m
     return markets
@@ -492,6 +501,7 @@ async def _forward_loop():
             enrolled = await db.wallets.find({}, {"address": 1}).sort("updatedAt", 1).limit(20).to_list(length=20)
             for w in enrolled:
                 await get_or_classify_wallet(poly, db, w["address"])
+                await asyncio.sleep(1.0)
         except Exception as exc:
             logger.warning("forward observation refresh failed: %s", exc)
 
@@ -646,6 +656,10 @@ async def validation():
 
 @api_router.get("/stats")
 async def stats():
+    now = time.time()
+    if os.environ.get("DB_NAME") != "powerplay_tests" and _stats_cache["data"] and (now - _stats_cache["ts"]) < STATS_CACHE_TTL:
+        return _stats_cache["data"]
+
     current = {"schemaVersion": WALLET_SCHEMA, "configSignature": tuning_config.signature()}
     sharp_filter = {**current, "primary": {"$in": list(QUALIFIED)}, "scoreStatus": "qualified"}
     tracked = await db.wallets.count_documents(current)
@@ -674,7 +688,7 @@ async def stats():
     if agg and agg[0].get("wr") is not None:
         avg_winrate = round(agg[0]["wr"] * 100, 1)
 
-    return {
+    result = {
         "trackedWallets": tracked,
         "sharpWallets": sharp,
         "categoryCounts": cat_counts,
@@ -684,6 +698,9 @@ async def stats():
         "sharpAvgWinrate": avg_winrate,
         "updatedAt": _now_iso(),
     }
+    _stats_cache["ts"] = now
+    _stats_cache["data"] = result
+    return result
 
 
 @api_router.post("/refresh", dependencies=[Depends(require_admin)])
@@ -796,7 +813,10 @@ async def _security_headers(request, call_next):
 async def _startup():
     await db.wallets.create_index("address", unique=True)
     await db.wallets.create_index([("smartScore", -1)])
+    await db.wallets.create_index([("schemaVersion", 1), ("configSignature", 1), ("primary", 1)])
+    await db.wallets.create_index([("schemaVersion", 1), ("configSignature", 1)])
     await db.markets_analysis.create_index("conditionId", unique=True)
+    await db.markets_analysis.create_index([("schemaVersion", 1), ("configSignature", 1)])
     settings_doc = await db.settings.find_one({"_id": "thresholds"})
     if settings_doc and settings_doc.get("config"):
         try:

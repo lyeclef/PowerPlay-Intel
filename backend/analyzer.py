@@ -9,7 +9,7 @@ from weakref import WeakValueDictionary
 from datetime import datetime, timezone
 
 from classifier import analyze_wallet, WALLET_SCHEMA, categorize_market
-from sharp_evidence import QUALIFIED, qualified_market_scope, candidate_market_scope
+from sharp_evidence import QUALIFIED, qualified_market_scope, candidate_market_scope, underdog_market_scope
 from evidence_store import record_observation
 
 ANALYSIS_SCHEMA = 23
@@ -198,9 +198,11 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
             continue
         ranking_scope = qualified_market_scope(prof, scope)
         scoped = (prof.get("evidence", {}).get("scopes") or {}).get(ranking_scope or scope, {})
-        qualified = ranking_scope is not None or (prof.get("primary") in QUALIFIED and not prof.get("isBot"))
+        qualified = ranking_scope is not None and not prof.get("isBot")
         cand_scope = candidate_market_scope(prof, scope)
-        is_candidate = cand_scope is not None and not qualified
+        is_candidate = cand_scope is not None and not qualified and not prof.get("isBot")
+        underdog_scope = underdog_market_scope(prof, scope)
+        is_underdog = underdog_scope is not None and not qualified and not is_candidate and not prof.get("isBot")
         # Directional shares net of paired YES/NO positions
         paired = min(cap["yesShares"], cap["noShares"])
         directional_yes = max(0., cap["yesShares"] - paired) * p0
@@ -226,12 +228,26 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
             candidate_cap_no += directional_no
             if directional_yes > 0 or directional_no > 0:
                 candidate_count += 1
+        elif is_underdog:
+            underdog_weight = 0.35
+            comb_smart_yes += directional_yes * underdog_weight
+            comb_smart_no += directional_no * underdog_weight
+            comb_cap_yes += directional_yes
+            comb_cap_no += directional_no
+            candidate_cap_yes += directional_yes
+            candidate_cap_no += directional_no
+            if directional_yes > 0 or directional_no > 0:
+                candidate_count += 1
         primary = prof.get("primary") or prof.get("category", "INSUFFICIENT_DATA")
         if primary in QUALIFIED and not qualified:
-            primary = scoped.get("category", "INSUFFICIENT_DATA")
+            primary = scoped.get("category", "RETAIL")
+        elif primary == "CANDIDATE" and not is_candidate:
+            primary = scoped.get("category", "RETAIL")
+        elif primary == "UNDERDOG_TRADER" and not is_underdog:
+            primary = scoped.get("category", "RETAIL")
         labels = [primary] + (["WHALE"] if prof.get("isWhale") else [])
         stats = prof.get("stats", {})
-        record = scoped if qualified else prof.get("evidence", {}).get("scopes", {}).get("Sports", {})
+        record = scoped if (qualified or is_candidate or is_underdog) else prof.get("evidence", {}).get("scopes", {}).get("Sports", {})
         cat_capital[primary] = cat_capital.get(primary, 0.0) + total_cap
         observed_hold = stats.get("capital_hold_ratio")
         if observed_hold is not None:
@@ -255,7 +271,7 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
         
         slippage_cents = None
         tail_status = None
-        if (qualified or is_candidate) and market_entry is not None and cur_px is not None:
+        if (qualified or is_candidate or is_underdog) and market_entry is not None and cur_px is not None:
             slippage_cents = round(cur_px - market_entry, 3)
             if slippage_cents <= 0.0:
                 tail_status = "BETTER_PRICE"

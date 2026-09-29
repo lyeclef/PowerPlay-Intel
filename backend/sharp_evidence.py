@@ -359,8 +359,20 @@ def assess_scope(records, scope, as_of, complete, cfg, frozen=None):
     qualified = all(g["passed"] for g in gates)
     holding_ok = holding_passes(hold, sh)
     holding_fail = hold["coverage"] >= sh["minDataCoverage"] and any(hold[k] is not None and hold[k] < sh["minHold"] - EPS for k in ("positionRate", "capitalRate"))
-    category = "SHARP" if qualified else "ACTIVE_TRADER" if holding_fail else (
-        "CANDIDATE" if holding_ok and n >= cfg["candidate"]["minEvents"] and profit > 0 else "RETAIL" if holding_ok else "INSUFFICIENT_DATA")
+    if qualified:
+        category = "SHARP"
+    elif holding_fail:
+        category = "ACTIVE_TRADER"
+    elif holding_ok and n >= cfg["candidate"]["minEvents"] and profit > 0:
+        if winrate is not None and winrate >= sh["minWinrate"] - EPS:
+            category = "CANDIDATE"
+        else:
+            category = "UNDERDOG_TRADER"
+    elif holding_ok:
+        category = "RETAIL"
+    else:
+        category = "INSUFFICIENT_DATA"
+
     if qualified and n >= proven["minEvents"] and span >= proven["minDays"]:
         category = "PROVEN_SHARP"
     halves = [measured[:n//2], measured[n//2:]]
@@ -392,10 +404,23 @@ def assess_scope(records, scope, as_of, complete, cfg, frozen=None):
 
 
 def qualified_market_scope(profile, category):
-    if profile.get("primary") not in QUALIFIED or category in {"Other", "Weather"}:
+    if not profile or profile.get("primary") not in QUALIFIED or profile.get("isBot") or category in {"Other", "Weather"}:
         return None
-    qualified = profile.get("evidence", {}).get("qualifiedScopes", [])
-    return "Sports" if "Sports" in qualified else category if category in qualified else None
+    ev = profile.get("evidence", {})
+    qualified = ev.get("qualifiedScopes", [])
+    if not qualified:
+        return None
+    # Category anti-bleeding gate: if wallet has >=3 settled events in this category,
+    # their record in this category must NOT be negative (profit < 0) or sub-50% winrate
+    if category:
+        cat_scope = ev.get("scopes", {}).get(category)
+        if cat_scope:
+            c_events = cat_scope.get("events", 0)
+            c_profit = cat_scope.get("profit", 0)
+            c_wr = cat_scope.get("winrate")
+            if c_events >= 3 and (c_profit < 0 or (c_wr is not None and c_wr < 0.50)):
+                return None
+    return "Sports" if "Sports" in qualified else (category if category in qualified else None)
 
 
 def candidate_market_scope(profile, category):
@@ -404,11 +429,23 @@ def candidate_market_scope(profile, category):
     if not profile or profile.get("isBot"):
         return None
     ev = profile.get("evidence", {})
-    cand_scopes = ev.get("candidateScopes")
-    is_cand = profile.get("primary") == "CANDIDATE" or "CANDIDATE" in (profile.get("labels") or [])
+    cand_scopes = ev.get("candidateScopes") or []
+    primary = profile.get("primary")
+    labels = profile.get("labels") or []
+    is_cand = primary == "CANDIDATE" or "CANDIDATE" in labels
     if not is_cand and not cand_scopes:
         return None
-    # If candidateScopes is tracked and populated:
+
+    # Category anti-bleeding gate:
+    if category and category not in {"Other", "Weather"}:
+        cat_scope = ev.get("scopes", {}).get(category)
+        if cat_scope:
+            c_events = cat_scope.get("events", 0)
+            c_profit = cat_scope.get("profit", 0)
+            c_wr = cat_scope.get("winrate")
+            if c_events >= 3 and (c_profit < 0 or (c_wr is not None and c_wr < 0.50)):
+                return None
+
     if cand_scopes:
         if "Sports" in cand_scopes:
             return "Sports"
@@ -418,11 +455,45 @@ def candidate_market_scope(profile, category):
         if is_cand and (best_key == "Sports" or best_key == category):
             return best_key
         return None
-    # If is_cand is True but candidateScopes was not tracked (e.g. mock test or legacy profile):
     if is_cand:
         best_key = ev.get("bestScopeKey")
         if best_key and best_key != "Sports" and category and best_key != category:
             return None
+        return "Sports"
+    return None
+
+
+def underdog_market_scope(profile, category):
+    """Check if a wallet qualifies as an UNDERDOG_TRADER for the given market category."""
+    if not profile or profile.get("isBot"):
+        return None
+    ev = profile.get("evidence", {})
+    underdog_scopes = ev.get("underdogScopes") or []
+    primary = profile.get("primary")
+    labels = profile.get("labels") or []
+    is_underdog = primary == "UNDERDOG_TRADER" or "UNDERDOG_TRADER" in labels
+    if not is_underdog and not underdog_scopes:
+        return None
+
+    # Category anti-bleeding gate: must at least be profitable in this sport if they have >= 3 events
+    if category and category not in {"Other", "Weather"}:
+        cat_scope = ev.get("scopes", {}).get(category)
+        if cat_scope:
+            c_events = cat_scope.get("events", 0)
+            c_profit = cat_scope.get("profit", 0)
+            if c_events >= 3 and c_profit < 0:
+                return None
+
+    if underdog_scopes:
+        if "Sports" in underdog_scopes:
+            return "Sports"
+        if category and category in underdog_scopes:
+            return category
+        best_key = ev.get("bestScopeKey")
+        if is_underdog and (best_key == "Sports" or best_key == category):
+            return best_key
+        return None
+    if is_underdog:
         return "Sports"
     return None
 
@@ -443,10 +514,10 @@ def build_evidence(activity, positions, perf, metadata, cfg, as_of, capped=False
         snapshots[p.get("conditionId")].append(p)
     records = [retention_record(grouped[r["conditionId"]], snapshots[r["conditionId"]], metadata.get(r["conditionId"], {}), r, as_of) for r in perf["per_market"]]
     auto = automation_evidence(activity, records, cfg["automation"])
-    return evaluate_records(records, auto, cfg, as_of, capped, positions_capped, frozen)
+    return evaluate_records(records, auto, cfg, as_of, capped, positions_capped, frozen, perf=perf)
 
 
-def evaluate_records(records, auto, cfg, as_of, capped=False, positions_capped=False, frozen=None):
+def evaluate_records(records, auto, cfg, as_of, capped=False, positions_capped=False, frozen=None, perf=None):
     """Re-evaluate saved observed records without inventing fresh market data."""
     scopes = {}
     by_category = defaultdict(list)
@@ -464,7 +535,13 @@ def evaluate_records(records, auto, cfg, as_of, capped=False, positions_capped=F
         scope["gates"].append({"key": "walletHolding", "label": "Sports-wide 90% retention", "passed": global_pass,
             "detail": "Measured sports position and capital retention in the extended window, including live trades; non-sports trading does not affect this requirement"})
         if scope["category"] in QUALIFIED and not global_pass:
-            scope["category"] = "ACTIVE_TRADER" if global_hold["coverage"] >= cfg["sharp"]["minDataCoverage"] and any(global_hold[k] is not None and global_hold[k] < .9 - EPS for k in ("positionRate", "capitalRate")) else "CANDIDATE"
+            holding_fail = global_hold["coverage"] >= cfg["sharp"]["minDataCoverage"] and any(global_hold[k] is not None and global_hold[k] < .9 - EPS for k in ("positionRate", "capitalRate"))
+            if holding_fail:
+                scope["category"] = "ACTIVE_TRADER"
+            elif scope.get("winrate") is not None and scope.get("winrate") >= cfg["sharp"]["minWinrate"] - EPS:
+                scope["category"] = "CANDIDATE"
+            else:
+                scope["category"] = "UNDERDOG_TRADER"
             scope["score"] = None
             scope["scoreComponents"] = {k: None for k in cfg["weights"]}
         auto_pass = auto["risk"] == "low_observed" and not auto["marketMakerStyle"]
@@ -474,24 +551,41 @@ def evaluate_records(records, auto, cfg, as_of, capped=False, positions_capped=F
             scope["category"] = "PROBABLE_BOT" if auto["risk"] == "high" else ("AUTOMATION_UNCERTAIN" if auto["risk"] == "uncertain" else "HEDGED_STYLE")
             scope["score"] = None
             scope["scoreComponents"] = {k: None for k in cfg["weights"]}
-    ordered = sorted(scopes.values(), key=lambda s: ({"PROVEN_SHARP": 5, "SHARP": 4, "CANDIDATE": 3, "ACTIVE_TRADER": 1}.get(s["category"], 0), s["events"]), reverse=True)
+    ordered = sorted(scopes.values(), key=lambda s: ({"PROVEN_SHARP": 5, "SHARP": 4, "CANDIDATE": 3, "UNDERDOG_TRADER": 2, "ACTIVE_TRADER": 1}.get(s["category"], 0), s["events"]), reverse=True)
     sports_scope = scopes.get("Sports")
     sports_profit = sports_scope.get("profit") if sports_scope else None
-
     # Sub-scope can promote wallet to SHARP if certified.
-    # But a sub-scope can ONLY promote wallet to CANDIDATE if overall sports profit is > 0.
-    if sports_scope and sports_scope.get("category") in QUALIFIED:
+    # But a sub-scope can ONLY promote wallet to CANDIDATE if overall sports winrate is >= 50% and sports profit is > 0.
+    # If overall sports record is UNDERDOG_TRADER, wallet stays UNDERDOG_TRADER!
+    if sports_scope and (sports_scope.get("category") in QUALIFIED or sports_scope.get("category") == "UNDERDOG_TRADER"):
+        best = sports_scope
+    elif sports_scope and sports_scope.get("winrate") is not None and sports_scope.get("winrate") < cfg["sharp"]["minWinrate"] - EPS:
         best = sports_scope
     else:
         eligible_ordered = [
             s for s in ordered
-            if s.get("category") in QUALIFIED or (s.get("category") == "CANDIDATE" and sports_profit is not None and sports_profit > 0)
+            if s.get("category") in QUALIFIED or (s.get("category") in {"CANDIDATE", "UNDERDOG_TRADER"} and sports_profit is not None and sports_profit > 0)
         ]
         best = eligible_ordered[0] if eligible_ordered else (sports_scope or (ordered[0] if ordered else None))
 
     category = best["category"] if best else "INSUFFICIENT_DATA"
-    if category == "CANDIDATE" and (sports_profit is None or sports_profit <= 0):
+    if category in {"CANDIDATE", "UNDERDOG_TRADER"} and (sports_profit is None or sports_profit <= 0):
         category = "ACTIVE_TRADER" if global_hold["coverage"] >= cfg["sharp"]["minDataCoverage"] and any(global_hold[k] is not None and global_hold[k] < .9 - EPS for k in ("positionRate", "capitalRate")) else "RETAIL"
+
+    # Overall Polymarket cashflow check:
+    overall_pnl = perf.get("net_realized") if perf else None
+    overall_roi = perf.get("true_roi") if perf else None
+    overall_positive = (
+        (overall_pnl is not None and overall_pnl > EPS) and
+        (overall_roi is not None and overall_roi > EPS)
+    ) if perf else True
+
+    disqualified_by_overall = False
+    disqualified_tier = None
+    if perf and (category in QUALIFIED or category in {"CANDIDATE", "UNDERDOG_TRADER"}) and not overall_positive:
+        disqualified_by_overall = True
+        disqualified_tier = category
+        category = "ACTIVE_TRADER" if (global_hold["coverage"] >= cfg["sharp"]["minDataCoverage"] and any(global_hold[k] is not None and global_hold[k] < .9 - EPS for k in ("positionRate", "capitalRate"))) else "RETAIL"
 
     if global_hold["coverage"] >= cfg["sharp"]["minDataCoverage"] and any(global_hold[k] is not None and global_hold[k] < .9 - EPS for k in ("positionRate", "capitalRate")):
         category = "ACTIVE_TRADER"
@@ -506,23 +600,29 @@ def evaluate_records(records, auto, cfg, as_of, capped=False, positions_capped=F
     reasons = [g["reason"] for g in auto["groups"]]
     if best:
         reasons.extend(g["label"] + ": " + g["detail"] for g in best["gates"] if not g["passed"])
-    if (sports_profit is None or sports_profit <= 0) and any(s.get("category") == "CANDIDATE" for s in scopes.values()):
+    if (sports_profit is None or sports_profit <= 0) and any(s.get("category") in {"CANDIDATE", "UNDERDOG_TRADER"} for s in scopes.values()):
         p_str = f"${sports_profit:,.2f}" if sports_profit is not None else "$0.00"
-        reasons.append(f"Negative overall measured sports P&L ({p_str}); wallet-level Candidate status disallowed across portfolio.")
+        reasons.append(f"Negative overall measured sports P&L ({p_str}); wallet-level smart status disallowed across portfolio.")
+    if disqualified_by_overall:
+        pnl_val = overall_pnl if overall_pnl is not None else 0.0
+        roi_val = (overall_roi * 100) if overall_roi is not None else 0.0
+        reasons.append(f"Non-positive overall Polymarket cashflow (P&L: ${pnl_val:,.2f}, ROI: {roi_val:.1f}%); disqualified from {disqualified_tier} status.")
     if not reasons:
         reasons = ["All scope qualification requirements passed" if category in QUALIFIED else "No sufficient measured sports track record yet"]
-    qualified_scopes = [k for k, s in scopes.items() if s["category"] in QUALIFIED] if category in QUALIFIED else []
-    candidate_scopes = [k for k, s in scopes.items() if s.get("category") == "CANDIDATE"]
+    qualified_scopes = [k for k, s in scopes.items() if s["category"] in QUALIFIED] if (category in QUALIFIED and overall_positive) else []
+    candidate_scopes = [k for k, s in scopes.items() if s.get("category") == "CANDIDATE"] if overall_positive else []
+    underdog_scopes = [k for k, s in scopes.items() if s.get("category") == "UNDERDOG_TRADER"] if overall_positive else []
     return {"ruleVersion": RULE_VERSION, "asOf": as_of, "category": category,
         "qualifiedScopes": qualified_scopes, "candidateScopes": candidate_scopes,
+        "underdogScopes": underdog_scopes,
         "scopes": scopes, "bestScope": best["scope"] if best else None,
         "bestScopeKey": next((k for k, s in scopes.items() if s is best), None),
-        "score": best["score"] if best and category in QUALIFIED else None,
-        "scoreComponents": best["scoreComponents"] if best and category in QUALIFIED else {k: None for k in cfg["weights"]},
+        "score": best["score"] if (best and category in QUALIFIED and overall_positive) else None,
+        "scoreComponents": best["scoreComponents"] if (best and category in QUALIFIED and overall_positive) else {k: None for k in cfg["weights"]},
         "holding": global_hold, "automation": auto, "reasons": reasons,
         "timing": {"prematchCost": sum(r["prematchCost"] for r in records), "liveCost": sum(r["liveCost"] for r in records), "postResultCost": sum(r["postResultCost"] for r in records), "unknownCost": sum(r["unknownTimingCost"] for r in records)},
         "records": records, "pendingPositions": sum(not r.get("resolutionObserved") for r in records),
         "voidPositions": sum(bool(r.get("void")) for r in records),
         "unknownMetadata": sum(not r.get("eventGroupingKnown") or not r.get("gameStartTime") for r in records),
-        "scoreStatus": "qualified" if category in QUALIFIED else "not_qualified",
+        "scoreStatus": "qualified" if (category in QUALIFIED and overall_positive) else "not_qualified",
         "scoreNote": f"Sharp rank uses win rate ({cfg['weights']['winrate']:.0%}), ROI ({cfg['weights']['roi']:.0%}) and track-record depth ({cfg['weights']['depth']:.0%}) after sports sample, 90% holding and bot checks. No price or fee-evidence gate."}

@@ -534,3 +534,96 @@ def test_global_net_profit_allows_wallet_candidate_status():
     profile = {"primary": ev["category"], "labels": [ev["category"]], "evidence": ev}
     assert candidate_market_scope(profile, "NFL") == "Sports"
     assert candidate_market_scope(profile, "Dota 2") == "Sports"
+
+
+def test_underdog_trader_for_profitable_sub_50_bettors():
+    from sharp_evidence import evaluate_records, candidate_market_scope, underdog_market_scope
+    cfg = config.get_config()
+    cfg["_signature"] = config.signature()
+    auto = {"risk": "low_observed", "marketMakerStyle": False, "groups": [], "estimatedEpisodes": 10, "incentiveIncome": 0.0}
+
+    # 6 events: 2 wins (won 400 net each = +800), 4 losses (lost 100 net each = -400)
+    # Winrate = 2/6 = 33.3%, Net PnL = +$400, Invested = $600 -> ROI = +66.7%
+    dog_records = [
+        {
+            "conditionId": f"dog_{i}", "category": "NFL", "eventId": f"dog_ev_{i}",
+            "settled": True, "resolutionObserved": True, "resolvedAt": NOW - i * 1000,
+            "firstEntryAt": NOW - i * 1000 - 500, "invested": 100.0,
+            "netPnl": 400.0 if i < 2 else -100.0,
+            "won": i < 2, "void": False, "prematchCost": 100.0, "liveCost": 0.0,
+            "postResultCost": 0.0, "unknownTimingCost": 0.0, "eventGroupingKnown": True,
+            "gameStartTime": NOW - i * 1000 - 100, "retention": 1.0, "capitalRetention": 1.0,
+            "acquiredCost": 100.0, "retainedCost": 100.0,
+            "cashflowClosedAt": NOW - i * 1000, "entryPrice": 0.25,
+        }
+        for i in range(6)
+    ]
+
+    ev = evaluate_records(dog_records, auto, cfg, NOW)
+    # Underdog trader because winrate is < 50% but net profit > 0
+    assert ev["category"] == "UNDERDOG_TRADER"
+    assert "Sports" in ev["underdogScopes"]
+    assert "Sports" not in ev["candidateScopes"]
+
+    profile = {"primary": ev["category"], "labels": [ev["category"]], "evidence": ev}
+    assert underdog_market_scope(profile, "NFL") == "Sports"
+    assert candidate_market_scope(profile, "NFL") is None
+
+
+def test_overall_wallet_loss_disqualifies_sharp_and_candidate():
+    from sharp_evidence import evaluate_records
+    cfg = config.get_config()
+    cfg["_signature"] = config.signature()
+    auto = {"risk": "low_observed", "marketMakerStyle": False, "groups": [], "estimatedEpisodes": 10, "incentiveIncome": 0.0}
+
+    # Winning sports records
+    winning_records = [
+        {
+            "conditionId": f"win_{i}", "category": "NFL", "eventId": f"win_ev_{i}",
+            "settled": True, "resolutionObserved": True, "resolvedAt": NOW - i * DAY,
+            "firstEntryAt": NOW - i * DAY - 500, "invested": 100.0, "netPnl": 200.0,
+            "won": True, "void": False, "prematchCost": 100.0, "liveCost": 0.0,
+            "postResultCost": 0.0, "unknownTimingCost": 0.0, "eventGroupingKnown": True,
+            "gameStartTime": NOW - i * DAY - 100, "retention": 1.0, "capitalRetention": 1.0,
+            "acquiredCost": 100.0, "retainedCost": 100.0,
+            "cashflowClosedAt": NOW - i * DAY, "entryPrice": 0.5,
+        }
+        for i in range(35)
+    ]
+
+    # Overall wallet has massive non-sports loss (e.g. -50000 on elections)
+    negative_perf = {"net_realized": -50000.0, "true_roi": -0.45, "per_market": []}
+    ev = evaluate_records(winning_records, auto, cfg, NOW, perf=negative_perf)
+    # Disqualified from SHARP to RETAIL
+    assert ev["category"] == "RETAIL"
+    assert ev["qualifiedScopes"] == []
+    assert any("Non-positive overall Polymarket cashflow" in r for r in ev["reasons"])
+
+    # If overall wallet is positive:
+    positive_perf = {"net_realized": 15000.0, "true_roi": 0.35, "per_market": []}
+    ev_pos = evaluate_records(winning_records, auto, cfg, NOW, perf=positive_perf)
+    assert ev_pos["category"] == "CANDIDATE"
+    assert "Sports" in ev_pos["candidateScopes"]
+
+
+def test_category_anti_bleeding_gate():
+    from sharp_evidence import qualified_market_scope, candidate_market_scope
+    # Wallet is SHARP overall in Sports (from CFB), but has 5 events in MLB with 1 win 4 losses (-400 profit)
+    profile = {
+        "primary": "SHARP",
+        "evidence": {
+            "qualifiedScopes": ["Sports", "CFB"],
+            "candidateScopes": [],
+            "scopes": {
+                "Sports": {"events": 40, "winrate": 0.65, "profit": 5000.0},
+                "CFB": {"events": 35, "winrate": 0.70, "profit": 5400.0},
+                "MLB": {"events": 5, "winrate": 0.20, "profit": -400.0},
+            }
+        }
+    }
+    # CFB and general sports work:
+    assert qualified_market_scope(profile, "CFB") == "Sports"
+    assert qualified_market_scope(profile, "NBA") == "Sports"  # 0 events in NBA, general sports allowed
+    # But MLB is strictly suppressed because of 5 events with sub-50% winrate / negative profit!
+    assert qualified_market_scope(profile, "MLB") is None
+

@@ -28,7 +28,7 @@ def test_opened_market_uses_reserved_lane_and_promoted_job_runs_once():
             assert jobs.status("other")["state"] == "not_started"
             for key in started:
                 jobs.enqueue({"id":key})
-            await asyncio.wait_for(asyncio.gather(started["a"].wait(), started["b"].wait()), 1)
+            await asyncio.wait_for(started["a"].wait(), 1)
             assert jobs.status("opened")["state"] == "waiting"
             for _ in range(4):
                 jobs.enqueue({"id":"opened"}, foreground=True)
