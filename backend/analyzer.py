@@ -239,7 +239,13 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
             if directional_yes > 0 or directional_no > 0:
                 candidate_count += 1
         primary = prof.get("primary") or prof.get("category", "INSUFFICIENT_DATA")
-        if primary in QUALIFIED and not qualified:
+        if qualified:
+            primary = scoped.get("category") or "SHARP"
+        elif is_candidate:
+            primary = "CANDIDATE"
+        elif is_underdog:
+            primary = "UNDERDOG_TRADER"
+        elif primary in QUALIFIED and not qualified:
             primary = scoped.get("category", "RETAIL")
         elif primary == "CANDIDATE" and not is_candidate:
             primary = scoped.get("category", "RETAIL")
@@ -294,6 +300,7 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
                 "qualified": qualified,
                 "isSharp": qualified,
                 "isCandidate": is_candidate,
+                "isUnderdog": is_underdog,
                 "signalNote": "Qualified sports track record; paired shares excluded" if qualified else ((f"Disciplined profitable bettor on watch ({cand_scope})" if cand_scope else "Disciplined profitable bettor on watch") if is_candidate else "Sports track record, holding or bot requirements not met"),
                 "scope": ranking_scope or cand_scope or scope,
                 "scoreNote": prof.get("scoreNote"),
