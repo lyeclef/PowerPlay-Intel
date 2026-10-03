@@ -233,12 +233,10 @@ def _available_analysis(cond, cached):
     latest = market_jobs.latest(cond)
     res = latest if (latest and (latest.get("participantCount") or not latest.get("pendingWallets") or not cached)) else cached
     if res and res.get("topWallets"):
-        if not res.get("sharpPick"):
-            res["sharpPick"] = compute_pick_from_doc(res, mode="sharp")
-        if not res.get("pick"):
-            res["pick"] = res.get("sharpPick") or compute_pick_from_doc(res, mode="combined")
-        if res.get("combined") and not res["combined"].get("pick"):
+        res["sharpPick"] = compute_pick_from_doc(res, mode="sharp")
+        if res.get("combined"):
             res["combined"]["pick"] = compute_pick_from_doc(res, mode="combined")
+        res["pick"] = res.get("sharpPick") or (res.get("combined") or {}).get("pick")
     return res
 
 

@@ -383,11 +383,13 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
     name_yes = outcomes[0] if outcomes else "Yes"
     name_no = outcomes[1] if len(outcomes) > 1 else "No"
 
-    # Check whether net smart lean switches sides between Sharps Only and Sharps + Candidates
+    # Check whether net smart lean switches sides or splits between Sharps Only and Sharps + Candidates
     sides_switched = (
         lean_side in ("YES", "NO")
-        and comb_lean_side in ("YES", "NO")
-        and lean_side != comb_lean_side
+        and (
+            (comb_lean_side in ("YES", "NO") and lean_side != comb_lean_side)
+            or comb_lean_side == "NEUTRAL"
+        )
     )
 
     # 1. SHARP-ONLY PICK
@@ -407,7 +409,10 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
 
         if sides_switched:
             s_conviction = "CONFLICT"
-            s_verdict = f"SPLIT CONSENSUS: Sharps favor {s_outcome} ({strength_yes if sharp_pick_side == 'YES' else strength_no}%), but net smart lean switches to {comb_lean_side} when Candidates are included ({comb_net_lean}%). No solid pick."
+            if comb_lean_side == "NEUTRAL":
+                s_verdict = f"SPLIT CONSENSUS: Sharps favor {s_outcome} ({strength_yes if sharp_pick_side == 'YES' else strength_no}%), but Candidates pull net smart lean into a dead heat ({comb_net_lean}%). No solid pick."
+            else:
+                s_verdict = f"SPLIT CONSENSUS: Sharps favor {s_outcome} ({strength_yes if sharp_pick_side == 'YES' else strength_no}%), but net smart lean switches to {comb_lean_side} when Candidates are included ({comb_net_lean}%). No solid pick."
         elif s_slip > 0.07:
             s_conviction = "CAUTION"
             s_verdict = f"CAUTION: Sharps entered {s_outcome} at {round((avg_entry_yes if sharp_pick_side == 'YES' else avg_entry_no)*100)}¢, but line already moved to {round((p0 if sharp_pick_side == 'YES' else p1)*100)}¢. Do not chase."
@@ -421,12 +426,18 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
             s_conviction = "LEAN"
             s_verdict = f"Sharp lean on {s_outcome}"
 
+        s_conflict_reason = (
+            f"Net smart lean deadlocks into a split ({comb_net_lean}%) when Candidates oppose Sharps ({lean_side})"
+            if comb_lean_side == "NEUTRAL"
+            else f"Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates ({comb_lean_side})"
+        ) if sides_switched else None
+
         sharp_pick = {
             "side": sharp_pick_side,
             "outcome": s_outcome,
             "conviction": s_conviction,
             "isConflict": sides_switched,
-            "conflictReason": f"Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates ({comb_lean_side})" if sides_switched else None,
+            "conflictReason": s_conflict_reason,
             "sharpCount": s_cnt,
             "candidateCount": 0,
             "smartCount": s_cnt,
@@ -439,10 +450,15 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
 
     # 2. COMBINED PICK (Sharps + Candidates)
     comb_pick_side = None
-    if (comb_lean_side == "YES" or comb_lean_side is None) and smart_cap_yes > smart_cap_no and smart_cap_yes > 0:
+    if comb_lean_side == "YES" and smart_cap_yes > smart_cap_no and smart_cap_yes > 0:
         comb_pick_side = "YES"
-    elif (comb_lean_side == "NO" or comb_lean_side is None) and smart_cap_no > smart_cap_yes and smart_cap_no > 0:
+    elif comb_lean_side == "NO" and smart_cap_no > smart_cap_yes and smart_cap_no > 0:
         comb_pick_side = "NO"
+    elif comb_lean_side in (None, "UNAVAILABLE"):
+        if smart_cap_yes > smart_cap_no and smart_cap_yes > 0:
+            comb_pick_side = "YES"
+        elif smart_cap_no > smart_cap_yes and smart_cap_no > 0:
+            comb_pick_side = "NO"
 
     comb_pick = None
     if comb_pick_side:
@@ -470,12 +486,18 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
             c_conviction = "LEAN"
             c_verdict = f"Smart lean on {c_outcome}"
 
+        c_conflict_reason = (
+            f"Net smart lean deadlocks into a split ({comb_net_lean}%) when Candidates oppose Sharps ({lean_side})"
+            if comb_lean_side == "NEUTRAL"
+            else f"Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates ({comb_lean_side})"
+        ) if sides_switched else None
+
         comb_pick = {
             "side": comb_pick_side,
             "outcome": c_outcome,
             "conviction": c_conviction,
             "isConflict": sides_switched,
-            "conflictReason": f"Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates ({comb_lean_side})" if sides_switched else None,
+            "conflictReason": c_conflict_reason,
             "sharpCount": c_sharp_cnt,
             "candidateCount": c_cand_cnt,
             "smartCount": c_cnt,
@@ -693,8 +715,10 @@ def compute_pick_from_doc(doc, market=None, mode="combined"):
 
     sides_switched = (
         lean_side in ("YES", "NO")
-        and comb_lean_side in ("YES", "NO")
-        and lean_side != comb_lean_side
+        and (
+            (comb_lean_side in ("YES", "NO") and lean_side != comb_lean_side)
+            or comb_lean_side == "NEUTRAL"
+        )
     )
 
     sharp_yes = [w for w in wallets if w.get("qualified") and w.get("side") == "YES" and w.get("directionalCapital", 0) > 0]
@@ -728,10 +752,11 @@ def compute_pick_from_doc(doc, market=None, mode="combined"):
             pick_side = "YES"
         elif effective_lean == "NO" and cap_no > 0:
             pick_side = "NO"
-    elif cap_yes > cap_no and cap_yes > 0:
-        pick_side = "YES"
-    elif cap_no > cap_yes and cap_no > 0:
-        pick_side = "NO"
+    elif effective_lean in (None, "UNAVAILABLE"):
+        if cap_yes > cap_no and cap_yes > 0:
+            pick_side = "YES"
+        elif cap_no > cap_yes and cap_no > 0:
+            pick_side = "NO"
 
     if not pick_side:
         return None
@@ -745,7 +770,10 @@ def compute_pick_from_doc(doc, market=None, mode="combined"):
 
     if sides_switched:
         conviction = "CONFLICT"
-        verdict = f"SPLIT CONSENSUS: Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates ({comb_lean_side}). No solid pick."
+        if comb_lean_side == "NEUTRAL":
+            verdict = f"SPLIT CONSENSUS: Sharps favor {chosen_name} ({round(doc.get('strengthYes' if pick_side == 'YES' else 'strengthNo') or 100)}%), but Candidates pull net smart lean into a dead heat ({comb.get('netLean')}%). No solid pick."
+        else:
+            verdict = f"SPLIT CONSENSUS: Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates ({comb_lean_side}). No solid pick."
     elif slip > 0.07:
         conviction = "CAUTION"
         verdict = f"CAUTION: Line moved to {round((p0 if pick_side == 'YES' else p1)*100)}¢"
@@ -761,12 +789,18 @@ def compute_pick_from_doc(doc, market=None, mode="combined"):
 
     slip_cents = round(slip * 100, 1) if (avg_entry_yes if pick_side == "YES" else avg_entry_no) is not None else None
 
+    conflict_reason = (
+        f"Net smart lean deadlocks into a split ({comb.get('netLean')}%) when Candidates oppose Sharps ({lean_side})"
+        if comb_lean_side == "NEUTRAL"
+        else f"Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates ({comb_lean_side})"
+    ) if sides_switched else None
+
     return {
         "side": pick_side,
         "outcome": chosen_name,
         "conviction": conviction,
         "isConflict": sides_switched,
-        "conflictReason": f"Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates ({comb_lean_side})" if sides_switched else None,
+        "conflictReason": conflict_reason,
         "sharpCount": sharp_cnt,
         "candidateCount": cand_cnt,
         "smartCount": smart_cnt,
@@ -781,8 +815,8 @@ def compute_pick_from_doc(doc, market=None, mode="combined"):
 def analysis_summary(doc):
     if not doc:
         return None
-    sharp_pick = doc.get("sharpPick") or compute_pick_from_doc(doc, mode="sharp")
-    comb_pick = (doc.get("combined") or {}).get("pick") or compute_pick_from_doc(doc, mode="combined")
+    sharp_pick = compute_pick_from_doc(doc, mode="sharp") if doc.get("topWallets") else doc.get("sharpPick")
+    comb_pick = compute_pick_from_doc(doc, mode="combined") if doc.get("topWallets") else (doc.get("combined") or {}).get("pick")
     comb = dict(doc.get("combined") or {
         "strengthYes": doc.get("strengthYes"),
         "strengthNo": doc.get("strengthNo"),
@@ -796,6 +830,10 @@ def analysis_summary(doc):
         "alpha": doc.get("alpha"),
     })
     comb["pick"] = comb_pick
+
+    tail_verdict = (doc.get("tailIntelligence") or {}).get("verdict") or doc.get("tailVerdict")
+    if sharp_pick and sharp_pick.get("isConflict"):
+        tail_verdict = sharp_pick.get("verdict")
 
     return {
         "schemaVersion": doc.get("schemaVersion"),
@@ -818,7 +856,7 @@ def analysis_summary(doc):
         "holdToResolution": doc.get("holdToResolution"),
         "topCategory": (doc.get("capitalDistribution") or [{}])[0].get("category"),
         "tailIntelligence": doc.get("tailIntelligence"),
-        "tailVerdict": (doc.get("tailIntelligence") or {}).get("verdict") or doc.get("tailVerdict"),
+        "tailVerdict": tail_verdict,
         "smartCapitalYes": doc.get("smartCapitalYes"),
         "smartCapitalNo": doc.get("smartCapitalNo"),
         "updatedAt": doc.get("updatedAt"),

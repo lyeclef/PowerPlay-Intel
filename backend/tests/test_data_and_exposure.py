@@ -264,6 +264,55 @@ def test_net_smart_lean_switches_sides_creates_conflict_pick(monkeypatch):
     assert "SPLIT CONSENSUS" in result["combined"]["pick"]["verdict"]
 
 
+def test_candidate_dilutes_sharp_to_neutral_creates_conflict_pick(monkeypatch):
+    """When Sharps favor NO, but Candidates take YES and bring the net lean into the NEUTRAL band,
+    it must trigger CONFLICT / SPLIT CONSENSUS, and NOT produce a phantom directional pick for combined."""
+    # 100 shares on NO @ 0.50 ($50) by Sharp with score 80 -> smart_no = 50 * 0.8 = 40
+    # 160 shares on YES @ 0.50 ($80) by Candidate (weight 0.50) -> smart_yes = 80 * 0.5 = 40
+    # Denom = 40 + 40 = 80 -> strengthYes = 50.0%, strengthNo = 50.0% -> netLean = 0.0% (NEUTRAL)
+    client = SimpleNamespace(holders=AsyncMock(return_value=[
+        {"token": "yes", "holders": [{"proxyWallet": "cand_w", "amount": 160}]},
+        {"token": "no", "holders": [{"proxyWallet": "sharp_w", "amount": 100}]},
+    ]))
+    async def profile(client, db, address):
+        if address == "sharp_w":
+            return {
+                "primary": "SHARP",
+                "audit": {"markets": [{"conditionId": "m", "preMatchOnly": True}]},
+                "evidence": {"qualifiedScopes": ["Counter-Strike"], "scopes": {"Counter-Strike": {"category": "SHARP", "score": 80}}}
+            }
+        else:
+            return {
+                "primary": "CANDIDATE",
+                "is_candidate": True,
+                "stats": {"hold_ratio": 0.95},
+                "evidence": {"category": "CANDIDATE"}
+            }
+    monkeypatch.setattr(analyzer, "get_or_classify_wallet", profile)
+    monkeypatch.setattr(analyzer, "generate_intel", AsyncMock(return_value={}))
+    db = SimpleNamespace(markets_analysis=SimpleNamespace(update_one=AsyncMock()))
+    result = asyncio.run(analyzer.analyze_market(client, db,
+        {"id": "m", "eventSlug": "cs2-test", "tokens": ["yes", "no"], "prices": [0.5, 0.5], "outcomes": ["Team A", "Team B"]}))
+
+    assert result["leanSide"] == "NO"
+    assert result["combined"]["leanSide"] == "NEUTRAL"
+    assert result["sharpPick"]["isConflict"] is True
+    assert result["sharpPick"]["conviction"] == "CONFLICT"
+    assert "SPLIT CONSENSUS" in result["sharpPick"]["verdict"]
+    assert result["combined"]["pick"] is None
+
+    # Verify compute_pick_from_doc and analysis_summary behavior
+    assert analyzer.compute_pick_from_doc(result, mode="combined") is None
+    s_pick = analyzer.compute_pick_from_doc(result, mode="sharp")
+    assert s_pick["isConflict"] is True
+    assert s_pick["conviction"] == "CONFLICT"
+
+    summary = analyzer.analysis_summary(result)
+    assert summary["sharpPick"]["isConflict"] is True
+    assert summary["combined"]["pick"] is None
+
+
+
 
 
 def test_candidate_in_dota_is_not_counted_in_nfl_market(monkeypatch):

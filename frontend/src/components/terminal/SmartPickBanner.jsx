@@ -14,15 +14,21 @@ export const SmartPickBanner = ({
   const isCombined = measureMode === "combined";
   const activeAnalysis = isCombined && a?.combined ? a.combined : a;
 
-  // Cross-cohort conflict check: did net smart lean switch sides between Sharps Only and Sharps + Candidates?
+  // Cross-cohort conflict check: did net smart lean switch sides or split between Sharps Only and Sharps + Candidates?
   const sharpLeanSide = a?.leanSide;
   const combLeanSide = a?.combined?.leanSide;
-  const isSidesSwitched =
+  const isSidesSwitched = Boolean(
     sharpLeanSide &&
-    combLeanSide &&
     ["YES", "NO"].includes(sharpLeanSide) &&
-    ["YES", "NO"].includes(combLeanSide) &&
-    sharpLeanSide !== combLeanSide;
+    ((combLeanSide && ["YES", "NO"].includes(combLeanSide) && sharpLeanSide !== combLeanSide) ||
+      combLeanSide === "NEUTRAL")
+  );
+
+  const isPickOpposed = Boolean(
+    a?.sharpPick?.side &&
+    a?.combined?.pick?.side &&
+    a.sharpPick.side !== a.combined.pick.side
+  );
 
   // Extract pick from activeAnalysis
   const rawPick = isCombined
@@ -31,40 +37,17 @@ export const SmartPickBanner = ({
 
   const isConflict =
     isSidesSwitched ||
+    isPickOpposed ||
     rawPick?.conviction === "CONFLICT" ||
-    rawPick?.isConflict;
+    rawPick?.isConflict ||
+    Boolean(a?.sharpPick?.isConflict) ||
+    Boolean(a?.combined?.pick?.isConflict);
 
-  // Fallback to tailIntelligence only if not conflicted
+  // Fallback to tailIntelligence only for sharp mode if not conflicted
   const pick =
     rawPick ||
-    (!isConflict && a?.tailIntelligence?.pick) ||
-    (!isConflict && a?.tailIntelligence?.sharpCapitalYes > a?.tailIntelligence?.sharpCapitalNo
-      ? {
-          side: "YES",
-          outcome: market?.outcomes?.[0] || "Yes",
-          conviction: "MODERATE",
-          sharpCount: a?.tailIntelligence?.sharpCountYes || 0,
-          candidateCount: a?.tailIntelligence?.candidateCountYes || 0,
-          smartCount: (a?.tailIntelligence?.sharpCountYes || 0) + (a?.tailIntelligence?.candidateCountYes || 0),
-          smartCapital: a?.tailIntelligence?.smartCapitalYes || a?.tailIntelligence?.sharpCapitalYes || 0,
-          avgEntry: a?.tailIntelligence?.avgSmartEntryYes || a?.tailIntelligence?.avgSharpEntryYes,
-          currentPrice: a?.tailIntelligence?.currentPriceYes || market?.prices?.[0],
-          slippageCents: a?.tailIntelligence?.slippageYesCents,
-        }
-      : !isConflict && a?.tailIntelligence?.sharpCapitalNo > a?.tailIntelligence?.sharpCapitalYes
-      ? {
-          side: "NO",
-          outcome: market?.outcomes?.[1] || "No",
-          conviction: "MODERATE",
-          sharpCount: a?.tailIntelligence?.sharpCountNo || 0,
-          candidateCount: a?.tailIntelligence?.candidateCountNo || 0,
-          smartCount: (a?.tailIntelligence?.sharpCountNo || 0) + (a?.tailIntelligence?.candidateCountNo || 0),
-          smartCapital: a?.tailIntelligence?.smartCapitalNo || a?.tailIntelligence?.sharpCapitalNo || 0,
-          avgEntry: a?.tailIntelligence?.avgSmartEntryNo || a?.tailIntelligence?.avgSharpEntryNo,
-          currentPrice: a?.tailIntelligence?.currentPriceNo || market?.prices?.[1],
-          slippageCents: a?.tailIntelligence?.slippageNoCents,
-        }
-      : null);
+    (!isConflict && !isCombined && (a?.sharpPick || a?.tailIntelligence?.pick)) ||
+    null;
 
   const eventSlug = market?.eventSlug || event?.eventSlug || market?.slug || event?.slug || "";
   const polymarketUrl = eventSlug
@@ -116,7 +99,10 @@ export const SmartPickBanner = ({
   // Full Hero Banner: Split Consensus State
   if (isConflict) {
     const sharpOutcome = sharpLeanSide === "YES" ? (market?.outcomes?.[0] || "Yes") : (market?.outcomes?.[1] || "No");
-    const combOutcome = combLeanSide === "YES" ? (market?.outcomes?.[0] || "Yes") : (market?.outcomes?.[1] || "No");
+    const isCombNeutral = combLeanSide === "NEUTRAL";
+    const combOutcome = isCombNeutral
+      ? "a dead heat / SPLIT"
+      : (combLeanSide === "YES" ? (market?.outcomes?.[0] || "Yes") : (market?.outcomes?.[1] || "No"));
     return (
       <div
         data-testid="smart-money-pick-card"
@@ -152,11 +138,19 @@ export const SmartPickBanner = ({
           <div>
             <div className="flex items-baseline gap-2.5 flex-wrap">
               <span className="mono text-lg sm:text-xl font-black uppercase tracking-tight text-amber-300">
-                Net Smart Lean Switches Sides
+                {isCombNeutral ? "Smart Money Lean Deadlocked" : "Net Smart Lean Switches Sides"}
               </span>
             </div>
             <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
-              Sharps favor <b className="text-white">{sharpOutcome}</b> ({a?.netLean ? `${a.netLean > 0 ? "+" : ""}${a.netLean}%` : sharpLeanSide}), but Candidates pull the market to <b className="text-white">{combOutcome}</b> ({a?.combined?.netLean ? `${a.combined.netLean > 0 ? "+" : ""}${a.combined.netLean}%` : combLeanSide}).
+              {isCombNeutral ? (
+                <>
+                  Sharps favor <b className="text-white">{sharpOutcome}</b> ({a?.netLean ? `${a.netLean > 0 ? "+" : ""}${a.netLean}%` : sharpLeanSide}), but Candidates pull net smart lean into a dead heat (<b className="text-white">SPLIT</b>{a?.combined?.netLean != null ? `, ${a.combined.netLean > 0 ? "+" : ""}${a.combined.netLean}%` : ""}).
+                </>
+              ) : (
+                <>
+                  Sharps favor <b className="text-white">{sharpOutcome}</b> ({a?.netLean ? `${a.netLean > 0 ? "+" : ""}${a.netLean}%` : sharpLeanSide}), but Candidates pull the market to <b className="text-white">{combOutcome}</b> ({a?.combined?.netLean ? `${a.combined.netLean > 0 ? "+" : ""}${a.combined.netLean}%` : combLeanSide}).
+                </>
+              )}
             </p>
             <p className="mono text-[11px] text-slate-400 mt-1">
               Recommendation: <b>Exercise caution</b> — verified Sharps and Candidates take opposing sides. No solid pick advised.
