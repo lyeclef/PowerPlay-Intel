@@ -171,3 +171,20 @@ def test_sharp_average_uses_qualifying_sports_record(api):
         assert response.json()["sharpWallets"] == 1
         assert response.json()["sharpAvgWinrate"] == 70
     asyncio.run(run())
+
+
+def test_diag_endpoint(api):
+    request, headers = api
+    async def run():
+        response = await request("GET", "/api/diag")
+        assert response.status_code == 200
+        data = response.json()
+        assert "rss_mb" in data
+        assert "metadata_cache_len" in data
+        assert "market_index_len" in data
+
+        trim_resp = await request("POST", "/api/diag/trim", headers=headers)
+        assert trim_resp.status_code == 200
+        assert trim_resp.json() == {"status": "trimmed"}
+    asyncio.run(run())
+

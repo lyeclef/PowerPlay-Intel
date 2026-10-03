@@ -148,10 +148,34 @@ def retention_record(events, positions, meta, row, as_of):
                     "feeKnown": e.get("feeUsd") is not None or e.get("feeIncludedInCashflow") is True})
         elif e.get("side") == "SELL":
             left = size
+            sell_price = num(e.get("price"))
+            is_post_game = bool(
+                (result_at and t >= result_at)
+                or (start and t >= start + 10800)
+                or meta.get("ended") is True
+                or meta.get("closed") is True
+            )
             for lot in lots[key]:
                 taken = min(left, lot["size"])
-                lot["size"] -= taken
-                lot["continuous"] = max(0, lot["continuous"] - taken)
+                unit_cost = lot["unitCost"]
+                capture_ratio = (sell_price - unit_cost) / (1.0 - unit_cost) if (1.0 - unit_cost) > EPS else 0.0
+
+                is_settlement_cashout = (
+                    sell_price >= 0.985
+                    or (is_post_game and sell_price >= 0.88)
+                    or (capture_ratio >= 0.80 and sell_price >= 0.88)
+                )
+
+                if is_settlement_cashout:
+                    kept = min(taken, lot["continuous"])
+                    redeemed_shares += kept
+                    redeemed_cost += kept * lot["unitCost"]
+                    lot["size"] -= taken
+                    lot["continuous"] -= kept
+                else:
+                    lot["size"] -= taken
+                    lot["continuous"] = max(0, lot["continuous"] - taken)
+
                 left -= taken
                 if left <= EPS:
                     break
@@ -303,8 +327,29 @@ def cohort_time(row):
 
 
 def holding_passes(hold, cfg):
-    return (hold["coverage"] >= cfg["minDataCoverage"]
-        and all(hold[k] is not None and hold[k] >= cfg["minHold"] - EPS for k in ("positionRate", "capitalRate")))
+    if hold["coverage"] < cfg.get("minDataCoverage", 0.70):
+        return False
+    min_h = cfg.get("minHold", 0.90)
+    pos_rate = hold.get("positionRate")
+    cap_rate = hold.get("capitalRate")
+    if pos_rate is None or cap_rate is None:
+        return False
+    return pos_rate >= min_h - EPS and cap_rate >= min_h - EPS
+
+
+def is_holding_fail(hold, cfg):
+    """Holding failure that explicitly indicates active trading / scalping (<80% retention)."""
+    if hold["coverage"] < cfg.get("minDataCoverage", 0.70):
+        return False
+    pos_rate = hold.get("positionRate")
+    cap_rate = hold.get("capitalRate")
+    if pos_rate is None or cap_rate is None:
+        return False
+    if pos_rate >= 0.80 - EPS and cap_rate >= 0.80 - EPS:
+        return False
+    if pos_rate >= 0.90 - EPS and cap_rate >= 0.70 - EPS:
+        return False
+    return True
 
 
 def assess_scope(records, scope, as_of, complete, cfg, frozen=None):
@@ -357,8 +402,8 @@ def assess_scope(records, scope, as_of, complete, cfg, frozen=None):
          "detail":f"{n}/{len(events)} observed events have grouped, reconciled cashflows. A capped history is a sample, not an automatic rejection."},
     ]
     qualified = all(g["passed"] for g in gates)
-    holding_ok = holding_passes(hold, sh)
-    holding_fail = hold["coverage"] >= sh["minDataCoverage"] and any(hold[k] is not None and hold[k] < sh["minHold"] - EPS for k in ("positionRate", "capitalRate"))
+    holding_fail = is_holding_fail(hold, sh)
+    holding_ok = not holding_fail
     if qualified:
         category = "SHARP"
     elif holding_fail:
@@ -535,7 +580,7 @@ def evaluate_records(records, auto, cfg, as_of, capped=False, positions_capped=F
         scope["gates"].append({"key": "walletHolding", "label": "Sports-wide 90% retention", "passed": global_pass,
             "detail": "Measured sports position and capital retention in the extended window, including live trades; non-sports trading does not affect this requirement"})
         if scope["category"] in QUALIFIED and not global_pass:
-            holding_fail = global_hold["coverage"] >= cfg["sharp"]["minDataCoverage"] and any(global_hold[k] is not None and global_hold[k] < .9 - EPS for k in ("positionRate", "capitalRate"))
+            holding_fail = is_holding_fail(global_hold, cfg["sharp"])
             if holding_fail:
                 scope["category"] = "ACTIVE_TRADER"
             elif scope.get("winrate") is not None and scope.get("winrate") >= cfg["sharp"]["minWinrate"] - EPS:
@@ -570,7 +615,7 @@ def evaluate_records(records, auto, cfg, as_of, capped=False, positions_capped=F
 
     category = best["category"] if best else "INSUFFICIENT_DATA"
     if category in {"CANDIDATE", "UNDERDOG_TRADER"} and (sports_profit is None or sports_profit <= 0):
-        category = "ACTIVE_TRADER" if global_hold["coverage"] >= cfg["sharp"]["minDataCoverage"] and any(global_hold[k] is not None and global_hold[k] < .9 - EPS for k in ("positionRate", "capitalRate")) else "RETAIL"
+        category = "ACTIVE_TRADER" if is_holding_fail(global_hold, cfg["sharp"]) else "RETAIL"
 
     # Overall Polymarket cashflow check:
     overall_pnl = perf.get("net_realized") if perf else None
@@ -585,11 +630,11 @@ def evaluate_records(records, auto, cfg, as_of, capped=False, positions_capped=F
     if perf and (category in QUALIFIED or category in {"CANDIDATE", "UNDERDOG_TRADER"}) and not overall_positive:
         disqualified_by_overall = True
         disqualified_tier = category
-        category = "ACTIVE_TRADER" if (global_hold["coverage"] >= cfg["sharp"]["minDataCoverage"] and any(global_hold[k] is not None and global_hold[k] < .9 - EPS for k in ("positionRate", "capitalRate"))) else "RETAIL"
+        category = "ACTIVE_TRADER" if is_holding_fail(global_hold, cfg["sharp"]) else "RETAIL"
 
-    if global_hold["coverage"] >= cfg["sharp"]["minDataCoverage"] and any(global_hold[k] is not None and global_hold[k] < .9 - EPS for k in ("positionRate", "capitalRate")):
+    if is_holding_fail(global_hold, cfg["sharp"]):
         category = "ACTIVE_TRADER"
-    elif not best and all(global_hold[k] is not None and global_hold[k] >= .9 - EPS for k in ("positionRate", "capitalRate")):
+    elif not best and global_pass:
         category = "RETAIL"
     if auto["risk"] == "high":
         category = "PROBABLE_BOT"

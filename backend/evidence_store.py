@@ -21,6 +21,15 @@ _metadata_cache = {}
 _metadata_inflight = {}
 METADATA_SCHEMA = 2
 COLLECTOR_STATE = {"status": "starting", "lastRun": None, "captured": 0, "errors": 0}
+MAX_METADATA_CACHE = 2500
+
+
+def _put_metadata(cid, data):
+    _metadata_cache[cid] = data
+    if len(_metadata_cache) > MAX_METADATA_CACHE:
+        to_del = list(_metadata_cache.keys())[:500]
+        for k in to_del:
+            _metadata_cache.pop(k, None)
 
 
 def normalize_metadata(raw, observed_at, previous=None):
@@ -64,9 +73,9 @@ async def _fetch_metadata_batch(client, db, batch):
         for cid in batch:
             old = _metadata_cache.get(cid)
             if old:
-                _metadata_cache[cid] = {**old, "retryAfter":now + 30}
+                _put_metadata(cid, {**old, "retryAfter":now + 30})
             else:
-                _metadata_cache[cid] = {"conditionId":cid, "fetchedAt":now, "unavailable":True}
+                _put_metadata(cid, {"conditionId":cid, "fetchedAt":now, "unavailable":True})
         return
     found = {r.get("conditionId"):r for r in raw if r.get("conditionId") in batch}
     updates = []
@@ -78,7 +87,7 @@ async def _fetch_metadata_batch(client, db, batch):
             data = {**old, "retryAfter":now + 30}
         else:
             data = {"conditionId":cid, "fetchedAt":now, "unavailable":True}
-        _metadata_cache[cid] = data
+        _put_metadata(cid, data)
         updates.append(UpdateOne({"conditionId":cid}, {"$set":data}, upsert=True))
     if db is not None and updates:
         await db.evidence_markets.bulk_write(updates, ordered=False)
@@ -110,7 +119,7 @@ async def load_metadata(client, db, ids):
         async for row in db.evidence_markets.find({"conditionId":{"$in":missing}, "metadataSchema":METADATA_SCHEMA}, {"_id":0}):
             old = _metadata_cache.get(row["conditionId"], {})
             if row.get("fetchedAt", 0) > old.get("fetchedAt", 0):
-                _metadata_cache[row["conditionId"]] = row
+                _put_metadata(row["conditionId"], row)
     # The lock protects only registration. Network/DB work for unrelated wallets
     # runs concurrently; overlapping condition IDs share the same fetch task.
     async with _metadata_lock:

@@ -26,7 +26,7 @@ def _clamp(x, lo=0.0, hi=100.0):
 
 RELIABLE_SETTLED = 10  # min reconstructed settled bets before we trust the true winrate
 
-WALLET_SCHEMA = 23  # bump to force re-analysis of cached wallets after an engine change
+WALLET_SCHEMA = 24  # bump to force re-analysis of cached wallets after an engine change
 
 
 # Market category (sport/game) derived from the Polymarket event slug prefix, e.g.

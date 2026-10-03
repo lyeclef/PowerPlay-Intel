@@ -627,3 +627,36 @@ def test_category_anti_bleeding_gate():
     # But MLB is strictly suppressed because of 5 events with sub-50% winrate / negative profit!
     assert qualified_market_scope(profile, "MLB") is None
 
+
+def test_settlement_cashout_at_99_cents_is_held_to_resolution():
+    # Selling at 99c after winning a bet is settlement cashout, not a scalp
+    b = trade(side="BUY", size=100, cash=50, outcome=0)
+    s = trade(side="SELL", size=100, cash=99, outcome=0)
+    s["timestamp"] = 200
+    r = record([b, s], meta={"resolved": True, "resolvedAt": 300, "payouts": [1, 0]})
+    assert r["heldToResolution"] is True
+    assert r["retention"] == 1.0
+    assert r["capitalRetention"] == 1.0
+
+
+def test_midgame_scalp_at_65_cents_is_not_held():
+    # Selling at 65c mid-game is an in-play scalp, not settlement cashout
+    b = trade(side="BUY", size=100, cash=50, outcome=0)
+    s = trade(side="SELL", size=100, cash=65, outcome=0)
+    s["timestamp"] = 200
+    r = record([b, s], meta={"resolved": True, "resolvedAt": 300, "payouts": [1, 0]})
+    assert r["heldToResolution"] is False
+    assert r["retention"] == 0.0
+
+
+def test_88_percent_retention_qualifies_as_candidate_not_scalper():
+    rows = good_rows(50)
+    # 88% retention across rows
+    for i, r in enumerate(rows):
+        if i < 6:
+            r.update(retention=0, retainedCost=0)
+    result = assess(rows)
+    assert result["holding"]["positionRate"] == pytest.approx(44 / 50)  # 88%
+    assert result["category"] == "CANDIDATE"
+
+

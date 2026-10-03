@@ -83,7 +83,7 @@ api_router = APIRouter(prefix="/api")
 MARKETS_CACHE_TTL = 60
 STATS_CACHE_TTL = 30
 _stats_cache = {"ts": 0, "data": None}
-ANALYSIS_TTL = 300
+ANALYSIS_TTL = 600
 _markets_cache: dict[str, dict] = {}
 async def _run_market_job(market, progress):
     return await analyze_market(poly, db, market, on_progress=progress)
@@ -91,6 +91,26 @@ async def _run_market_job(market, progress):
 
 market_jobs = MarketJobs(_run_market_job, tuning_config.signature)
 _market_index: dict[str, dict] = {}
+
+
+def _index_market(m):
+    if not m or not isinstance(m, dict) or not m.get("id"):
+        return
+    _market_index[m["id"]] = m
+    if len(_market_index) > 300:
+        for k in list(_market_index.keys())[:50]:
+            _market_index.pop(k, None)
+
+
+def trim_memory():
+    import gc
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
 
 TAPE_MAX = 160
 TAPE_REFRESH = 45
@@ -198,14 +218,14 @@ async def _fetch_flat_markets(category_id: str, n_events: int) -> list:
             else:
                 raise
     for m in markets:
-        _market_index[m["id"]] = m
+        _index_market(m)
     return markets
 
 
 def _analysis_fresh(doc):
     if not doc:
         return False
-    ttl = 60 if doc.get("isPartial") or doc.get("cachedWallets") else ANALYSIS_TTL
+    ttl = 120 if doc.get("isPartial") else ANALYSIS_TTL
     return _fresh(doc.get("updatedAt"), ttl)
 
 
@@ -250,7 +270,7 @@ async def _warm_events(events: list, market_type: str | None, cap=None):
 
 async def _enqueue_analysis(market: dict, foreground=False, retry=False):
     cond = market["id"]
-    _market_index[cond] = market
+    _index_market(market)
     existing = market.get("analysis")
     if existing is None:
         existing = await db.markets_analysis.find_one({"conditionId":cond,
@@ -274,6 +294,7 @@ async def _refresh_loop():
                 events = group_by_event(flat)[:3]
                 await _warm_events(events, "moneyline", cap=3)
                 await asyncio.sleep(1)
+            trim_memory()
         except Exception as exc:  # noqa: BLE001
             logger.warning("refresh loop error: %s", exc)
         await asyncio.sleep(20 * 60)
@@ -406,10 +427,14 @@ async def _build_tape():
 
 async def _tape_loop():
     await asyncio.sleep(5)
+    ticks = 0
     while True:
         try:
             async with _tape_lock:
                 await _build_tape()
+            ticks += 1
+            if ticks % 6 == 0:
+                trim_memory()
         except Exception as exc:  # noqa: BLE001
             logger.warning("tape loop error: %s", exc)
         await asyncio.sleep(TAPE_REFRESH)
@@ -468,6 +493,7 @@ async def _heal_loop():
             stale = await db.wallets.count_documents({"$or": [{"schemaVersion": {"$ne": WALLET_SCHEMA}}, {"configSignature": {"$ne": tuning_config.signature()}}]})
             if stale and not _heal_state["running"]:
                 await _heal_wallets(limit=300)
+                trim_memory()
         except Exception as exc:  # noqa: BLE001
             logger.warning("heal loop error: %s", exc)
 
@@ -502,6 +528,7 @@ async def _forward_loop():
             for w in enrolled:
                 await get_or_classify_wallet(poly, db, w["address"])
                 await asyncio.sleep(1.0)
+            trim_memory()
         except Exception as exc:
             logger.warning("forward observation refresh failed: %s", exc)
 
@@ -510,6 +537,44 @@ async def _forward_loop():
 @api_router.get("/")
 async def root():
     return {"service": "SharpMarket Terminal", "status": "live"}
+
+
+@api_router.get("/diag")
+async def diag():
+    import gc
+    rss_mb = 0.0
+    peak_mb = 0.0
+    try:
+        import resource
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        peak_mb = round(usage.ru_maxrss / 1024, 2)
+    except Exception:
+        pass
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    rss_mb = round(int(line.split()[1]) / 1024, 2)
+                    break
+    except Exception:
+        rss_mb = peak_mb
+    from evidence_store import _metadata_cache
+    return {
+        "rss_mb": rss_mb or peak_mb,
+        "peak_rss_mb": peak_mb,
+        "metadata_cache_len": len(_metadata_cache),
+        "market_index_len": len(_market_index),
+        "markets_cache_len": len(_markets_cache),
+        "jobs_len": len(market_jobs.jobs),
+        "bg_tasks_len": len(_background_tasks),
+        "gc_counts": gc.get_count(),
+    }
+
+
+@api_router.post("/diag/trim")
+async def manual_trim(admin: None = Depends(require_admin)):
+    trim_memory()
+    return {"status": "trimmed"}
 
 
 @api_router.get("/categories")
@@ -574,7 +639,7 @@ async def search(q: str = Query(..., max_length=200), limit: int = Query(20, ge=
                 existing_conds.add(m["id"])
 
     for m in flat:
-        _market_index[m["id"]] = m
+        _index_market(m)
 
     events = group_by_event(flat)
 

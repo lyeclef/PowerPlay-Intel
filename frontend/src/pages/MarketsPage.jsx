@@ -39,7 +39,7 @@ export default function MarketsPage() {
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["markets", category, marketType],
     queryFn: () => fetchMarkets(category, marketType, 30),
-    refetchInterval: 12000,
+    refetchInterval: 25000,
     enabled: !submitted,
   });
 
@@ -47,7 +47,7 @@ export default function MarketsPage() {
     queryKey: ["search", submitted],
     queryFn: () => searchMarkets(submitted, 24),
     enabled: !!submitted,
-    refetchInterval: 12000,
+    refetchInterval: 25000,
   });
 
   const esports = (categories || []).filter((c) => c.group === "esports");

@@ -34,11 +34,11 @@ export const MarketDetail = ({ event, initialId, open, onOpenChange, initialMode
     queryFn: () => fetchMarketDetail(selectedId),
     enabled: !!selectedId && open,
     refetchOnWindowFocus: false,
-    refetchInterval: query => open && profilingActive(query.state.data?.profiling) ? 1500 : false,
+    refetchInterval: query => open && profilingActive(query.state.data?.profiling) ? 2000 : false,
   });
 
   const a = data?.analysis;
-  const m = data?.market;
+  const m = data?.market || event?.markets?.find((x) => x.id === selectedId);
   const isCombined = measureMode === "combined";
   const activeMetrics = isCombined && a?.combined ? a.combined : a;
   const retryProfiling = async () => {
@@ -189,65 +189,11 @@ export const MarketDetail = ({ event, initialId, open, onOpenChange, initialMode
 
         <div className="px-5"><ProfilingStatus status={isLoading ? {state:"profiling"} : data?.profiling} analysis={a} onRetry={retryProfiling} /></div>
         {isError && a && <p role="status" className="px-5 text-xs text-amber-300">Refresh unavailable. Saved results remain visible. <button className="underline" onClick={() => refetch()}>Retry connection</button></p>}
-        {isError && !a ? <QueryError onRetry={refetch} /> : isLoading || !a || (!a.participantCount && a.pendingWallets) ? (
-          <div className="flex flex-col items-center justify-center gap-3 py-24 text-retail">
-            {(isLoading || profilingActive(data?.profiling)) && <Loader2 className="animate-spin text-insider" size={26} />}
-            <span className="label-mono text-[11px]">{data?.profiling?.state === "error" ? "Unable to finish profiling" : "Preparing wallet results…"}</span>
-            <span className="mono text-[10px] text-slate-600">Completed wallets appear here as they finish</span>
-          </div>
+        {isError && !a && !m ? (
+          <QueryError onRetry={refetch} />
         ) : (
           <div className="p-5 space-y-5">
-            {/* Smart Money Pick Banner — Incorporates Sharps & Candidates */}
-            <SmartPickBanner
-              market={m}
-              event={event}
-              analysis={a}
-              measureMode={measureMode}
-            />
-
-            {/* AI intel — structured */}
-            <div
-              data-testid="detail-ai-narrative-summary"
-              className="panel-2 p-4 border-l-2"
-              style={{ borderLeftColor: "#00D2FF" }}
-            >
-              <div className="label-mono text-[9px] text-insider mb-2 flex items-center gap-1">
-                <span className="h-1.5 w-1.5 rounded-full bg-insider pulse-dot" /> EVIDENCE SUMMARY
-              </div>
-              <p className="text-sm font-semibold text-white leading-relaxed mb-3">
-                {a.intel?.verdict}
-              </p>
-              <ul className="space-y-2">
-                {(a.intel?.bullets || []).map((b, i) => (
-                  <li key={i} className="text-xs text-slate-300 leading-relaxed flex items-start gap-2">
-                    <span className="mt-1.5 h-1 w-1 rounded-full bg-insider shrink-0" />
-                    {b}
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            {activeMetrics?.alpha?.divergent && (
-              <div
-                data-testid="detail-alpha-signal"
-                className="panel-2 p-3 border-l-2 flex items-start gap-2.5"
-                style={{ borderLeftColor: "#FFB020" }}
-              >
-                <Zap size={16} className="text-[#FFB020] mt-0.5 shrink-0" />
-                <div>
-                  <div className="label-mono text-[9px] text-[#FFB020] mb-0.5">
-                    DEEP ALPHA · {isCombined ? "SHARPS + CANDIDATES" : "SMART MONEY"} vs MARKET
-                  </div>
-                  <p className="text-xs text-slate-200 leading-relaxed">
-                    Smart money is fading the line — backing{" "}
-                    <b style={{ color: activeMetrics.alpha.side === "YES" ? "#00E599" : "#FF3B5C" }}>{activeMetrics.alpha.side}</b>{" "}
-                    while the market favors {activeMetrics.alpha.marketFavorite} at{" "}
-                    {Math.round((activeMetrics.alpha.favPrice || 0) * 100)}¢. Divergence edge {activeMetrics.alpha.edge}.
-                  </p>
-                </div>
-              </div>
-            )}
-
+            {/* Market Prices & Type */}
             <div className="flex items-center gap-2">
               <span className="mono text-xs font-semibold px-2 py-1 rounded-sm border border-[#00E59944] text-sharp bg-[#00E59912]">
                 {(m?.outcomes?.[0] || "Yes")} {fmtCents(m?.prices?.[0])}
@@ -260,9 +206,77 @@ export const MarketDetail = ({ event, initialId, open, onOpenChange, initialMode
               </span>
             </div>
 
-            {/* Measurement Scope Selector */}
-            <div className="flex items-center justify-between panel-2 px-3 py-2 border border-hair rounded-sm">
-              <span className="label-mono text-[9px] text-retail">MEASUREMENT SCOPE</span>
+            {/* Smart Money Pick Banner — Incorporates Sharps & Candidates */}
+            <SmartPickBanner
+              market={m}
+              event={event}
+              analysis={a}
+              measureMode={measureMode}
+            />
+
+            {!a || (!a.participantCount && a.pendingWallets) ? (
+              <div className="panel p-8 border border-hair rounded-sm flex flex-col items-center justify-center gap-3 text-retail my-4">
+                {(isLoading || profilingActive(data?.profiling)) && <Loader2 className="animate-spin text-insider" size={28} />}
+                <span className="label-mono text-xs text-white font-bold tracking-wide">
+                  {data?.profiling?.state === "error" ? "UNABLE TO FINISH PROFILING" : "ANALYZING TOP MARKET PARTICIPANTS…"}
+                </span>
+                <span className="mono text-[11px] text-slate-400 text-center max-w-sm">
+                  {data?.profiling?.completedWallets != null && data?.profiling?.totalWallets != null
+                    ? `Reconstructed ${data.profiling.completedWallets} of ${data.profiling.totalWallets} holder profiles`
+                    : "Extracting verified holder ledgers and sports performance…"}
+                </span>
+                <span className="mono text-[10px] text-slate-600">Completed wallets and sharp consensus will stream in here</span>
+              </div>
+            ) : (
+              <>
+                {/* AI intel — structured */}
+                {a?.intel?.verdict && (
+                  <div
+                    data-testid="detail-ai-narrative-summary"
+                    className="panel-2 p-4 border-l-2"
+                    style={{ borderLeftColor: "#00D2FF" }}
+                  >
+                    <div className="label-mono text-[9px] text-insider mb-2 flex items-center gap-1">
+                      <span className="h-1.5 w-1.5 rounded-full bg-insider pulse-dot" /> EVIDENCE SUMMARY
+                    </div>
+                    <p className="text-sm font-semibold text-white leading-relaxed mb-3">
+                      {a.intel.verdict}
+                    </p>
+                    <ul className="space-y-2">
+                      {(a.intel?.bullets || []).map((b, i) => (
+                        <li key={i} className="text-xs text-slate-300 leading-relaxed flex items-start gap-2">
+                          <span className="mt-1.5 h-1 w-1 rounded-full bg-insider shrink-0" />
+                          {b}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {activeMetrics?.alpha?.divergent && (
+                  <div
+                    data-testid="detail-alpha-signal"
+                    className="panel-2 p-3 border-l-2 flex items-start gap-2.5"
+                    style={{ borderLeftColor: "#FFB020" }}
+                  >
+                    <Zap size={16} className="text-[#FFB020] mt-0.5 shrink-0" />
+                    <div>
+                      <div className="label-mono text-[9px] text-[#FFB020] mb-0.5">
+                        DEEP ALPHA · {isCombined ? "SHARPS + CANDIDATES" : "SMART MONEY"} vs MARKET
+                      </div>
+                      <p className="text-xs text-slate-200 leading-relaxed">
+                        Smart money is fading the line — backing{" "}
+                        <b style={{ color: activeMetrics.alpha.side === "YES" ? "#00E599" : "#FF3B5C" }}>{activeMetrics.alpha.side}</b>{" "}
+                        while the market favors {activeMetrics.alpha.marketFavorite} at{" "}
+                        {Math.round((activeMetrics.alpha.favPrice || 0) * 100)}¢. Divergence edge {activeMetrics.alpha.edge}.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Measurement Scope Selector */}
+                <div className="flex items-center justify-between panel-2 px-3 py-2 border border-hair rounded-sm">
+                  <span className="label-mono text-[9px] text-retail">MEASUREMENT SCOPE</span>
               <div className="flex items-center gap-1.5">
                 <button
                   data-testid="detail-measure-sharp"
@@ -447,6 +461,8 @@ export const MarketDetail = ({ event, initialId, open, onOpenChange, initialMode
                 ))}
               </div>
             </div>
+            </>
+            )}
           </div>
         )}
       </SheetContent>

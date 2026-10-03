@@ -7,7 +7,7 @@ log = logging.getLogger("market_jobs")
 
 
 class MarketJobs:
-    def __init__(self, runner, signature, timeout=240, max_pending=120):
+    def __init__(self, runner, signature, timeout=240, max_pending=40):
         self.runner, self.signature = runner, signature
         self.timeout, self.max_pending = timeout, max_pending
         self.jobs = {}
@@ -33,9 +33,10 @@ class MarketJobs:
         key = self._key(market["id"])
         job = self.jobs.get(key)
         if job and job["state"] in {"waiting", "profiling"}:
-            if foreground and job["state"] == "waiting" and job["lane"] == 0:
+            if foreground and job["lane"] == 0:
                 job["lane"] = 1
-                self.queues[1].put_nowait((key, job))
+                if job["state"] == "waiting":
+                    self.queues[1].put_nowait((key, job))
             return
         if job and job["state"] == "error" and not retry and time.monotonic() - job["finished"] < 30:
             return
@@ -47,7 +48,7 @@ class MarketJobs:
             del self.jobs[victim]  # Make room for the market the user opened.
         # Retain bounded recent progress only; completed results also live in Mongo.
         for old in list(self.jobs):
-            if len(self.jobs) < 160:
+            if len(self.jobs) < 30:
                 break
             if self.jobs[old]["state"] in {"ready", "error"}:
                 del self.jobs[old]

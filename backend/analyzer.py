@@ -22,7 +22,7 @@ WALLET_ANALYSIS_TIMEOUT = 75
 NEUTRAL_BAND = 4.0
 
 _wallet_locks = WeakValueDictionary()
-_wallet_classify_sem = asyncio.Semaphore(5)
+_wallet_classify_sem = asyncio.Semaphore(8)
 
 
 async def _guarded_classify_wallet(client, db, address):
