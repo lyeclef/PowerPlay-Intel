@@ -32,7 +32,7 @@ from classifier import classify, smart_score, reconstruct_performance, WALLET_SC
 from sharp_evidence import RULE_VERSION, QUALIFIED, qualified_market_scope
 from evidence_store import capture_benchmarks, validation_status, COLLECTOR_STATE
 from classifier import categorize_market
-from analyzer import analyze_market, analysis_summary, get_or_classify_wallet, _fresh, ANALYSIS_SCHEMA, compute_pick_from_doc
+from analyzer import analyze_market, analysis_summary, get_or_classify_wallet, _fresh, ANALYSIS_SCHEMA, compute_pick_from_doc, refresh_analysis_prices
 from market_jobs import MarketJobs
 
 ROOT_DIR = Path(__file__).parent
@@ -229,14 +229,11 @@ def _analysis_fresh(doc):
     return _fresh(doc.get("updatedAt"), ttl)
 
 
-def _available_analysis(cond, cached):
+def _available_analysis(cond, cached, market=None):
     latest = market_jobs.latest(cond)
     res = latest if (latest and (latest.get("participantCount") or not latest.get("pendingWallets") or not cached)) else cached
     if res and res.get("topWallets"):
-        res["sharpPick"] = compute_pick_from_doc(res, mode="sharp")
-        if res.get("combined"):
-            res["combined"]["pick"] = compute_pick_from_doc(res, mode="combined")
-        res["pick"] = res.get("sharpPick") or (res.get("combined") or {}).get("pick")
+        res = refresh_analysis_prices(res, market)
     return res
 
 
@@ -249,7 +246,7 @@ async def _attach_analyses(events: list):
             analyses[doc["conditionId"]] = doc
     for ev in events:
         for m in ev["markets"]:
-            doc = _available_analysis(m["id"], analyses.get(m["id"]))
+            doc = _available_analysis(m["id"], analyses.get(m["id"]), m)
             m["analysis"] = analysis_summary(doc)
             m["profiling"] = market_jobs.status(m["id"], doc)
 
@@ -332,7 +329,7 @@ async def _build_tape():
     if addrs:
         async for w in db.wallets.find(
             {"address": {"$in": addrs}, "schemaVersion": WALLET_SCHEMA, "configSignature": tuning_config.signature()},
-            {"_id": 0, "address": 1, "labels": 1, "primary": 1, "smartScore": 1, "name": 1, "pseudonym": 1, "evidence.qualifiedScopes": 1, "evidence.scopes": 1},
+            {"_id": 0, "address": 1, "labels": 1, "primary": 1, "smartScore": 1, "isBot": 1, "name": 1, "pseudonym": 1, "evidence.qualifiedScopes": 1, "evidence.scopes": 1},
         ):
             wallet_map[w["address"]] = w
 
@@ -345,14 +342,23 @@ async def _build_tape():
             price = _to_f(t.get("price"))
             usd = size * price
             prof = wallet_map.get(addr)
-            labels = (prof or {}).get("labels") or []
-            score = (prof or {}).get("smartScore")
-            primary = (prof or {}).get("primary")
-            is_sharp = bool(
-                prof
-                and (primary in QUALIFIED or bool(set(labels or []) & QUALIFIED))
-                and not (prof or {}).get("isBot", False)
-            )
+            wallet_labels = (prof or {}).get("labels") or []
+            wallet_primary = (prof or {}).get("primary")
+            market_category = categorize_market(m.get("eventSlug") or m.get("slug"), m.get("question"))
+            ranking_scope = qualified_market_scope(prof, market_category)
+            scopes = (prof or {}).get("evidence", {}).get("scopes") or {}
+            scoped = scopes.get(ranking_scope or market_category, {})
+            is_sharp = ranking_scope is not None
+            primary = wallet_primary
+            if is_sharp:
+                primary = scoped.get("category") or wallet_primary
+            elif wallet_primary in QUALIFIED:
+                primary = scoped.get("category") or "RETAIL"
+                if primary in QUALIFIED:
+                    primary = "RETAIL"
+            labels = ([primary] + [label for label in wallet_labels
+                if label != wallet_primary and label != primary and label not in QUALIFIED]) if primary else wallet_labels
+            score = scoped.get("score", (prof or {}).get("smartScore")) if is_sharp else None
 
             prices = m.get("prices") or []
             tokens = m.get("tokens") or []
@@ -404,7 +410,10 @@ async def _build_tape():
                     "name": (prof or {}).get("name") or t.get("name"),
                     "pseudonym": (prof or {}).get("pseudonym") or t.get("pseudonym"),
                     "labels": labels,
-                    "primary": (prof or {}).get("primary"),
+                    "primary": primary,
+                    "walletPrimary": wallet_primary,
+                    "walletLabels": wallet_labels,
+                    "qualificationScope": ranking_scope,
                     "smartScore": score,
                     "sharp": is_sharp,
                     "classified": prof is not None,
@@ -594,7 +603,7 @@ async def markets(
     flat = await _fetch_flat_markets(category, max(limit, 30))
     events = group_by_event(flat)[:limit]
     await _attach_analyses(events)
-    await _warm_events(events, type, cap=6)
+    await _warm_events(events, type)
     return {"category": category, "type": type, "count": len(events), "events": events}
 
 
@@ -656,7 +665,7 @@ async def search(q: str = Query(..., max_length=200), limit: int = Query(20, ge=
     events = events[:limit]
 
     await _attach_analyses(events)
-    await _warm_events(events, None, cap=4)
+    await _warm_events(events, None)
     return {"query": q, "count": len(events), "events": events}
 
 
@@ -677,7 +686,7 @@ async def market_detail(condition_id: str, retry: bool = False):
         raise HTTPException(status_code=404, detail="Market not found or not tradeable")
     if retry or not _analysis_fresh(doc):
         market_jobs.enqueue(market, foreground=True, retry=retry)
-    available = _available_analysis(condition_id, doc)
+    available = _available_analysis(condition_id, doc, market)
     return {"market":market, "analysis":available, "profiling":market_jobs.status(condition_id, available)}
 
 

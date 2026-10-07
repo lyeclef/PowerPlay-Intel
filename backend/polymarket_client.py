@@ -1,6 +1,7 @@
 """Async client + helpers for Polymarket public APIs (Gamma + Data API). No keys required."""
 import asyncio
 import json
+import math
 import logging
 import re
 import time
@@ -236,35 +237,45 @@ class PolymarketClient:
         ) or []
 
     async def activity(self, user: str, limit: int = 300, offset: int = 0, end: int | None = None) -> list:
-        params: dict = {"user": user, "limit": limit}
+        params: dict = {"user": user, "limit": limit, "start": 1,
+                       "sortBy": "TIMESTAMP", "sortDirection": "DESC"}
         if end is not None:
             params["end"] = int(end)
-        elif offset:
+        if offset:
             params["offset"] = offset
         return await self._list(
             DATA, "/activity", params
         )
 
     async def activity_paginated(self, user: str, pages: int = 12, size: int = 500, min_days: float = 65.0):
-        """Pull the wallet's activity ledger (TRADE + REDEEM + ...) via timestamp-based pagination.
-        Using ?end=<timestamp-1> bypasses Polymarket's 5000 offset cap and allows high-volume traders
-        to be tracked back 60+ days.
-        Returns (events, capped) where capped=True means more exist beyond the sampled pages."""
+        """Inclusive timestamp windows with offsets across tied boundary fills.
+
+        Stable TIMESTAMP/DESC ordering is documented by the Data API. Each new
+        window skips only boundary rows already read, never an entire second.
+        https://docs.polymarket.com/api-reference/core/get-user-activity
+        Returns (events, capped); budget exhaustion is always a partial sample.
+        """
         out: list = []
-        end_ts = None
+        end_ts = int(time.time())
+        offset = 0
         now_ts = time.time()
         for p in range(pages):
-            arr = await self.activity(user, size, offset=p * size if end_ts is None else 0, end=end_ts)
+            if offset > 5000:
+                return out, True
+            arr = await self.activity(user, size, offset=offset, end=end_ts)
+            timestamps = [r.get("timestamp") for r in arr]
+            if any(not isinstance(t, (int, float)) or isinstance(t, bool) or not math.isfinite(t) or t != int(t) or t < 0 or t > end_ts for t in timestamps):
+                raise UpstreamError("Invalid activity timestamps or ignored activity window")
+            if timestamps != sorted(timestamps, reverse=True):
+                raise UpstreamError("Activity order is not TIMESTAMP/DESC")
             out.extend(arr)
             if len(arr) < size:
                 return out, False
-            ts = arr[-1].get("timestamp")
-            if ts is not None:
-                end_ts = int(ts) - 1
-                if (now_ts - float(ts)) / 86400.0 >= min_days:
-                    return out, True
-            else:
-                end_ts = None
+            ts = int(timestamps[-1])
+            offset = offset + len(arr) if ts == end_ts else sum(t == ts for t in timestamps)
+            end_ts = ts
+            if (now_ts - ts) / 86400.0 >= min_days:
+                return out, True
         return out, True
 
     async def value(self, user: str) -> list:

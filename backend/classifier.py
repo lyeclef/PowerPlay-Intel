@@ -26,7 +26,7 @@ def _clamp(x, lo=0.0, hi=100.0):
 
 RELIABLE_SETTLED = 10  # min reconstructed settled bets before we trust the true winrate
 
-WALLET_SCHEMA = 24  # bump to force re-analysis of cached wallets after an engine change
+WALLET_SCHEMA = 25  # outcome-specific entries and explicit cashout policy
 
 
 # Market category (sport/game) derived from the Polymarket event slug prefix, e.g.
@@ -406,7 +406,9 @@ async def analyze_wallet(client, address, db=None):
     records = evidence.pop("records")
     from legacy_v2.classifier import compare
     previous_model = compare(address, activity, positions, value, capped, positions_capped)
-    market_entries = {r["conditionId"]: {"entryPrice": r.get("entryPrice"), "won": r.get("won"), "invested": r.get("invested")} for r in records if r.get("conditionId")}
+    market_entries = {r["conditionId"]: {"entryPrices": r.get("entryPrices") or {},
+        "entryPrice": next(iter(r["entryPrices"].values())) if len(r.get("entryPrices") or {}) == 1 else None,
+        "won": r.get("won"), "invested": r.get("invested")} for r in records if r.get("conditionId")}
     profile = {"address": address, **ident, **classification,
         "category": classification["primary"],
         "subTags": [l for l in classification["labels"] if l != classification["primary"]],

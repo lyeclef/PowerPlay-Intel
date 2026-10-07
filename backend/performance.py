@@ -57,6 +57,7 @@ def reconstruct(activity, positions, categorize, metadata=None, as_of=None):
         balances, pos = defaultdict(float), {}
         problems = set()
         spent = received = buy_shares = buys_usd = 0.0
+        outcome_buys, outcome_shares = defaultdict(float), defaultdict(float)
         redeemed = False
         relevant = False
         for p in current:
@@ -115,6 +116,8 @@ def reconstruct(activity, positions, categorize, metadata=None, as_of=None):
                 spent += cash
                 buys_usd += cash
                 buy_shares += shares
+                outcome_buys[key] += cash
+                outcome_shares[key] += shares
             else:
                 balances[key] -= shares
                 received += cash
@@ -180,6 +183,8 @@ def reconstruct(activity, positions, categorize, metadata=None, as_of=None):
             "invested": round(spent, 2), "proceeds": round(received + final_value, 2),
             "netPnl": round(pnl, 2) if settled else None,
             "entryPrice": round(buys_usd / buy_shares, 4) if buy_shares else 0.0,
+            "entryPrices": {key: round(outcome_buys[key] / shares, 4)
+                for key, shares in outcome_shares.items() if shares > EPS and not problems},
             "settled": settled, "heldToResolution": settled and held_to_resolution,
             "won": settled and pnl > EPS, "reconciled": not problems,
             "issues": sorted(problems),

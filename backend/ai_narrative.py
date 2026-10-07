@@ -152,10 +152,10 @@ def _fallback(summary):
     bullets = []
     ti = summary.get("tailIntelligence") or {}
     if ti.get("tailableCount", 0) > 0:
-        bullets.append(f"{ti['tailableCount']} Sharp position(s) currently meet prime tail criteria (entry near market line).")
+        bullets.append(f"{ti['tailableCount']} smart-money position(s) have measured entries within the accepted price range.")
     if sy is not None and sn is not None:
         bullets.append(f"Sharp directional capital splits {yes_name} {sy}% versus {no_name} {sn}%.")
-    bullets.append(f"{sharp} qualified Sharp wallets active with ≥90% resolution holding style.")
+    bullets.append(f"{sharp} qualified Sharp wallets meet the ≥90% holding / 97¢+ cashout policy.")
     if top_cats:
         bullets.append(f"Top participating cohorts: {top_cats}.")
     return {"verdict": verdict, "bullets": bullets[:4]}
@@ -207,10 +207,12 @@ def _parse(text):
 
 
 async def generate_intel(summary):
+    if (summary.get("combined") or {}).get("pick") and summary.get("strengthYes") is None:
+        return _clean(_fallback(summary))
     if summary.get("strengthYes") is None or summary.get("strengthNo") is None:
         return {"verdict": "No qualified Sharp signal for this market yet", "bullets": [
             "Wallet results remain visible while sports results, holding and automation are evaluated.",
-            "Candidates, uncertain automation and other trading styles do not drive this signal.",
+            "Sharp-only signals use qualified Sharps. Combined signals also include eligible Candidates and Underdogs.",
             "Coverage is a sample of top holders, not all market capital."]}
     api_key = os.environ.get("EMERGENT_LLM_KEY")
     if not api_key or not MODEL_NAME:

@@ -1,0 +1,15 @@
+[Unit]
+Description=PowerPlay Intel Backend
+After=network.target mongod.service
+Wants=mongod.service
+
+[Service]
+User=root
+WorkingDirectory=/var/www/powerplay/backend
+ExecStart=/var/www/powerplay/backend/venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8001
+Restart=always
+RestartSec=3
+EnvironmentFile=/var/www/powerplay/backend/.env
+
+[Install]
+WantedBy=multi-user.target

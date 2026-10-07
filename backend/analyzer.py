@@ -5,6 +5,8 @@ quality), NOT the average wallet quality — so a near-worthless longshot side
 correctly reads ~0 even if a couple of sharp wallets hold a tiny amount.
 """
 import asyncio
+import math
+import copy
 from weakref import WeakValueDictionary
 from datetime import datetime, timezone
 
@@ -12,7 +14,7 @@ from classifier import analyze_wallet, WALLET_SCHEMA, categorize_market
 from sharp_evidence import QUALIFIED, qualified_market_scope, candidate_market_scope, underdog_market_scope
 from evidence_store import record_observation
 
-ANALYSIS_SCHEMA = 23
+ANALYSIS_SCHEMA = 24
 from ai_narrative import generate_intel, _fallback
 from config import signature
 
@@ -20,6 +22,28 @@ WALLET_TTL_SECONDS = 3600
 MAX_WALLETS_PER_MARKET = 26
 WALLET_ANALYSIS_TIMEOUT = 75
 NEUTRAL_BAND = 4.0
+
+
+def _entry_price(row, side):
+    if not row:
+        return None
+    entries = row.get("entryPrices")
+    value = entries.get("0" if side == "YES" else "1") if isinstance(entries, dict) else row.get("entryPrice")
+    try:
+        value = float(value)
+        return value if math.isfinite(value) and 0 < value <= 1 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _slippage(entry, current):
+    return round((current - entry) * 100, 1) if entry is not None else None
+
+
+def _tail_status(cents):
+    if cents is None:
+        return None
+    return "BETTER_PRICE" if cents <= 0 else "PRIME_TAIL" if cents <= 3 else "ACCEPTABLE" if cents <= 7 else "LINE_MOVED"
 
 _wallet_locks = WeakValueDictionary()
 _wallet_classify_sem = asyncio.Semaphore(8)
@@ -154,7 +178,7 @@ async def analyze_market(client, db, market, on_progress=None):
         # Incremental previews use the fast local narrative. Optional provider text
         # cannot keep the completed wallet table hidden while it is generated.
         try:
-            analysis["intel"] = await asyncio.wait_for(generate_intel(_intel_summary(analysis)), timeout=5)
+            analysis["intel"] = await asyncio.wait_for(generate_intel(analysis_summary(analysis)), timeout=5)
         except Exception:
             pass
         if signature() != config_signature:
@@ -176,10 +200,11 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
     # smart-capital = capital weighted by wallet quality (score/100)
     smart_yes = smart_no = 0.0          # quality-weighted capital (drives sharp strength)
     sharp_cap_yes = sharp_cap_no = 0.0  # raw capital from qualified sharp wallets (display)
-    comb_smart_yes = comb_smart_no = 0.0  # quality-weighted capital (Sharps + Candidates)
-    comb_cap_yes = comb_cap_no = 0.0      # raw capital (Sharps + Candidates)
+    comb_smart_yes = comb_smart_no = 0.0  # quality-weighted capital (Sharps + Candidates + Underdogs)
+    comb_cap_yes = comb_cap_no = 0.0      # raw capital (Sharps + Candidates + Underdogs)
     candidate_cap_yes = candidate_cap_no = 0.0
     candidate_count = 0
+    underdog_count = 0
     cat_capital: dict[str, float] = {}
     hold_wsum = hold_total = 0.0
     top_wallets = []
@@ -237,7 +262,7 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
             candidate_cap_yes += directional_yes
             candidate_cap_no += directional_no
             if directional_yes > 0 or directional_no > 0:
-                candidate_count += 1
+                underdog_count += 1
         primary = prof.get("primary") or prof.get("category", "INSUFFICIENT_DATA")
         if qualified:
             primary = scoped.get("category") or "SHARP"
@@ -253,7 +278,8 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
             primary = scoped.get("category", "RETAIL")
         labels = [primary] + (["WHALE"] if prof.get("isWhale") else [])
         stats = prof.get("stats", {})
-        record = scoped if (qualified or is_candidate or is_underdog) else prof.get("evidence", {}).get("scopes", {}).get("Sports", {})
+        performance_scope = ranking_scope or cand_scope or underdog_scope or "Sports"
+        record = prof.get("evidence", {}).get("scopes", {}).get(performance_scope, {})
         cat_capital[primary] = cat_capital.get(primary, 0.0) + total_cap
         observed_hold = stats.get("capital_hold_ratio")
         if observed_hold is not None:
@@ -261,32 +287,20 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
             hold_total += total_cap
 
         # Tailability & Entry price tracking
-        market_entry = (prof.get("marketEntries") or {}).get(cond, {}).get("entryPrice")
+        wallet_side = "YES" if directional_yes > directional_no else ("NO" if directional_no > directional_yes else ("YES" if yc >= nc else "NO"))
+        market_entry = _entry_price((prof.get("marketEntries") or {}).get(cond), wallet_side)
         if market_entry is None:
             for m_rec in (prof.get("audit", {}).get("markets") or []):
-                if m_rec.get("conditionId") == cond and m_rec.get("entryPrice"):
-                    market_entry = _f(m_rec.get("entryPrice"))
+                if m_rec.get("conditionId") == cond:
+                    market_entry = _entry_price(m_rec, wallet_side)
                     break
-        if market_entry is None:
-            denom_sh = cap["yesShares"] if yc >= nc else cap["noShares"]
-            if denom_sh and denom_sh > 0:
-                market_entry = round((yc if yc >= nc else nc) / denom_sh, 4)
-
-        wallet_side = "YES" if directional_yes > directional_no else ("NO" if directional_no > directional_yes else ("YES" if yc >= nc else "NO"))
         cur_px = p0 if wallet_side == "YES" else p1
         
         slippage_cents = None
         tail_status = None
         if (qualified or is_candidate or is_underdog) and market_entry is not None and cur_px is not None:
-            slippage_cents = round(cur_px - market_entry, 3)
-            if slippage_cents <= 0.0:
-                tail_status = "BETTER_PRICE"
-            elif slippage_cents <= 0.03:
-                tail_status = "PRIME_TAIL"
-            elif slippage_cents <= 0.07:
-                tail_status = "ACCEPTABLE"
-            else:
-                tail_status = "LINE_MOVED"
+            slippage_cents = _slippage(market_entry, cur_px)
+            tail_status = _tail_status(slippage_cents)
 
         top_wallets.append(
             {
@@ -302,7 +316,7 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
                 "isCandidate": is_candidate,
                 "isUnderdog": is_underdog,
                 "signalNote": "Qualified sports track record; paired shares excluded" if qualified else ((f"Disciplined profitable bettor on watch ({cand_scope})" if cand_scope else "Disciplined profitable bettor on watch") if is_candidate else "Sports track record, holding or bot requirements not met"),
-                "scope": ranking_scope or cand_scope or scope,
+                "scope": ranking_scope or cand_scope or underdog_scope or scope,
                 "scoreNote": prof.get("scoreNote"),
                 "profileUpdatedAt": prof.get("updatedAt"),
                 "profileStale": i in stale,
@@ -312,11 +326,14 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
                 "side": wallet_side,
                 "capital": round(total_cap, 2),
                 "directionalCapital": round(directional_yes if wallet_side == "YES" else directional_no, 2),
+                "directionalShares": max(0, cap["yesShares"] - cap["noShares"]) if wallet_side == "YES" else max(0, cap["noShares"] - cap["yesShares"]),
+                "yesShares": cap["yesShares"], "noShares": cap["noShares"],
+                "signalWeight": q if qualified else .50 if is_candidate else .35 if is_underdog else 0,
                 "entryPrice": round(market_entry, 3) if market_entry is not None else None,
                 "currentPrice": round(cur_px, 3) if cur_px is not None else None,
                 "slippageCents": slippage_cents,
                 "tailStatus": tail_status,
-                "performanceScope": ranking_scope if qualified else "Sports",
+                "performanceScope": performance_scope,
                 "winrate": record.get("winrate"),
                 "trueWinrate": record.get("winrate"),
                 "settledBets": record.get("events", 0),
@@ -341,14 +358,16 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
     comb_net_lean = round(comb_strength_yes - comb_strength_no, 1) if comb_denom > 0 else None
     comb_lean_side = "UNAVAILABLE" if comb_net_lean is None else ("YES" if comb_net_lean > NEUTRAL_BAND else ("NO" if comb_net_lean < -NEUTRAL_BAND else "NEUTRAL"))
 
-    # Tailing Consensus Calculation (Sharps + Candidates as Smart Money)
+    # Tailing Consensus Calculation (Sharps + Candidates + Underdogs as Smart Money)
     sharp_wallets_yes = [w for w in top_wallets if w["qualified"] and w["side"] == "YES" and w["directionalCapital"] > 0]
     sharp_wallets_no = [w for w in top_wallets if w["qualified"] and w["side"] == "NO" and w["directionalCapital"] > 0]
     cand_wallets_yes = [w for w in top_wallets if w.get("isCandidate") and w["side"] == "YES" and w["directionalCapital"] > 0]
     cand_wallets_no = [w for w in top_wallets if w.get("isCandidate") and w["side"] == "NO" and w["directionalCapital"] > 0]
+    underdog_wallets_yes = [w for w in top_wallets if w.get("isUnderdog") and w["side"] == "YES" and w["directionalCapital"] > 0]
+    underdog_wallets_no = [w for w in top_wallets if w.get("isUnderdog") and w["side"] == "NO" and w["directionalCapital"] > 0]
 
-    smart_wallets_yes = sharp_wallets_yes + cand_wallets_yes
-    smart_wallets_no = sharp_wallets_no + cand_wallets_no
+    smart_wallets_yes = sharp_wallets_yes + cand_wallets_yes + underdog_wallets_yes
+    smart_wallets_no = sharp_wallets_no + cand_wallets_no + underdog_wallets_no
 
     sharp_count_yes = len(sharp_wallets_yes)
     sharp_count_no = len(sharp_wallets_no)
@@ -371,176 +390,22 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
     # Fallback to sharp-only if available
     s_entry_yes_list = [w["entryPrice"] * w["directionalCapital"] for w in sharp_wallets_yes if w["entryPrice"] is not None]
     s_cap_yes_list = [w["directionalCapital"] for w in sharp_wallets_yes if w["entryPrice"] is not None]
-    avg_entry_yes = round(sum(s_entry_yes_list) / sum(s_cap_yes_list), 3) if s_cap_yes_list and sum(s_cap_yes_list) > 0 else avg_smart_entry_yes
+    avg_entry_yes = round(sum(s_entry_yes_list) / sum(s_cap_yes_list), 3) if s_cap_yes_list and sum(s_cap_yes_list) > 0 else None
 
     s_entry_no_list = [w["entryPrice"] * w["directionalCapital"] for w in sharp_wallets_no if w["entryPrice"] is not None]
     s_cap_no_list = [w["directionalCapital"] for w in sharp_wallets_no if w["entryPrice"] is not None]
-    avg_entry_no = round(sum(s_entry_no_list) / sum(s_cap_no_list), 3) if s_cap_no_list and sum(s_cap_no_list) > 0 else avg_smart_entry_no
+    avg_entry_no = round(sum(s_entry_no_list) / sum(s_cap_no_list), 3) if s_cap_no_list and sum(s_cap_no_list) > 0 else None
 
-    tail_wallets = [w for w in top_wallets if (w["qualified"] or w.get("isCandidate")) and w.get("tailStatus") in ("BETTER_PRICE", "PRIME_TAIL", "ACCEPTABLE")]
+    tail_wallets = [w for w in top_wallets if (w["qualified"] or w.get("isCandidate") or w.get("isUnderdog")) and w.get("tailStatus") in ("BETTER_PRICE", "PRIME_TAIL", "ACCEPTABLE")]
 
     outcomes = market.get("outcomes") or ["Yes", "No"]
     name_yes = outcomes[0] if outcomes else "Yes"
     name_no = outcomes[1] if len(outcomes) > 1 else "No"
 
-    # Check whether net smart lean switches sides or splits between Sharps Only and Sharps + Candidates
-    sides_switched = (
-        lean_side in ("YES", "NO")
-        and (
-            (comb_lean_side in ("YES", "NO") and lean_side != comb_lean_side)
-            or comb_lean_side == "NEUTRAL"
-        )
-    )
-
-    # 1. SHARP-ONLY PICK
-    sharp_pick_side = None
-    if (lean_side == "YES" or lean_side is None) and sharp_cap_yes > sharp_cap_no and sharp_cap_yes > 0:
-        sharp_pick_side = "YES"
-    elif (lean_side == "NO" or lean_side is None) and sharp_cap_no > sharp_cap_yes and sharp_cap_no > 0:
-        sharp_pick_side = "NO"
-
-    sharp_pick = None
-    if sharp_pick_side:
-        s_slip = (p0 - (avg_entry_yes or p0)) if sharp_pick_side == "YES" else (p1 - (avg_entry_no or p1))
-        s_slip_cents = round(s_slip * 100, 1)
-        s_outcome = name_yes if sharp_pick_side == "YES" else name_no
-        s_cap = sharp_cap_yes if sharp_pick_side == "YES" else sharp_cap_no
-        s_cnt = sharp_count_yes if sharp_pick_side == "YES" else sharp_count_no
-
-        if sides_switched:
-            s_conviction = "CONFLICT"
-            if comb_lean_side == "NEUTRAL":
-                s_verdict = f"SPLIT CONSENSUS: Sharps favor {s_outcome} ({strength_yes if sharp_pick_side == 'YES' else strength_no}%), but Candidates pull net smart lean into a dead heat ({comb_net_lean}%). No solid pick."
-            else:
-                s_verdict = f"SPLIT CONSENSUS: Sharps favor {s_outcome} ({strength_yes if sharp_pick_side == 'YES' else strength_no}%), but net smart lean switches to {comb_lean_side} when Candidates are included ({comb_net_lean}%). No solid pick."
-        elif s_slip > 0.07:
-            s_conviction = "CAUTION"
-            s_verdict = f"CAUTION: Sharps entered {s_outcome} at {round((avg_entry_yes if sharp_pick_side == 'YES' else avg_entry_no)*100)}¢, but line already moved to {round((p0 if sharp_pick_side == 'YES' else p1)*100)}¢. Do not chase."
-        elif s_cnt >= 2 or s_cap >= 2000:
-            s_conviction = "HIGH"
-            s_verdict = f"{s_cnt} Sharps backing {s_outcome} (${round(s_cap):,})"
-        elif s_cnt >= 1:
-            s_conviction = "MODERATE"
-            s_verdict = f"{s_cnt} Sharp backing {s_outcome} (${round(s_cap):,})"
-        else:
-            s_conviction = "LEAN"
-            s_verdict = f"Sharp lean on {s_outcome}"
-
-        s_conflict_reason = (
-            f"Net smart lean deadlocks into a split ({comb_net_lean}%) when Candidates oppose Sharps ({lean_side})"
-            if comb_lean_side == "NEUTRAL"
-            else f"Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates ({comb_lean_side})"
-        ) if sides_switched else None
-
-        sharp_pick = {
-            "side": sharp_pick_side,
-            "outcome": s_outcome,
-            "conviction": s_conviction,
-            "isConflict": sides_switched,
-            "conflictReason": s_conflict_reason,
-            "sharpCount": s_cnt,
-            "candidateCount": 0,
-            "smartCount": s_cnt,
-            "smartCapital": round(s_cap, 2),
-            "avgEntry": round((avg_entry_yes if sharp_pick_side == "YES" else avg_entry_no) or 0, 3),
-            "currentPrice": round(p0 if sharp_pick_side == "YES" else p1, 3),
-            "slippageCents": s_slip_cents,
-            "verdict": s_verdict,
-        }
-
-    # 2. COMBINED PICK (Sharps + Candidates)
-    comb_pick_side = None
-    if comb_lean_side == "YES" and smart_cap_yes > smart_cap_no and smart_cap_yes > 0:
-        comb_pick_side = "YES"
-    elif comb_lean_side == "NO" and smart_cap_no > smart_cap_yes and smart_cap_no > 0:
-        comb_pick_side = "NO"
-    elif comb_lean_side in (None, "UNAVAILABLE"):
-        if smart_cap_yes > smart_cap_no and smart_cap_yes > 0:
-            comb_pick_side = "YES"
-        elif smart_cap_no > smart_cap_yes and smart_cap_no > 0:
-            comb_pick_side = "NO"
-
-    comb_pick = None
-    if comb_pick_side:
-        c_slip = (p0 - (avg_smart_entry_yes or p0)) if comb_pick_side == "YES" else (p1 - (avg_smart_entry_no or p1))
-        c_slip_cents = round(c_slip * 100, 1)
-        c_outcome = name_yes if comb_pick_side == "YES" else name_no
-        c_cap = smart_cap_yes if comb_pick_side == "YES" else smart_cap_no
-        c_cnt = smart_count_yes if comb_pick_side == "YES" else smart_count_no
-        c_sharp_cnt = sharp_count_yes if comb_pick_side == "YES" else sharp_count_no
-        c_cand_cnt = cand_count_yes if comb_pick_side == "YES" else cand_count_no
-
-        if sides_switched:
-            c_conviction = "CONFLICT"
-            c_verdict = f"SPLIT CONSENSUS: Candidates pull to {c_outcome} ({comb_strength_yes if comb_pick_side == 'YES' else comb_strength_no}%), but verified Sharps lean {lean_side} ({strength_yes if lean_side == 'YES' else strength_no}%). No solid pick."
-        elif c_slip > 0.07:
-            c_conviction = "CAUTION"
-            c_verdict = f"CAUTION: Smart money entered {c_outcome} at {round((avg_smart_entry_yes if comb_pick_side == 'YES' else avg_smart_entry_no)*100)}¢, but line already moved to {round((p0 if comb_pick_side == 'YES' else p1)*100)}¢. Do not chase."
-        elif c_sharp_cnt >= 1 and (c_cnt >= 2 or c_cap >= 1500):
-            c_conviction = "HIGH"
-            c_verdict = f"Smart Money ({c_sharp_cnt} Sharp, {c_cand_cnt} Candidate) backing {c_outcome} (${round(c_cap):,})"
-        elif c_cnt >= 1:
-            c_conviction = "MODERATE"
-            c_verdict = f"Smart Money ({c_sharp_cnt} Sharp, {c_cand_cnt} Candidate) backing {c_outcome} (${round(c_cap):,})"
-        else:
-            c_conviction = "LEAN"
-            c_verdict = f"Smart lean on {c_outcome}"
-
-        c_conflict_reason = (
-            f"Net smart lean deadlocks into a split ({comb_net_lean}%) when Candidates oppose Sharps ({lean_side})"
-            if comb_lean_side == "NEUTRAL"
-            else f"Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates ({comb_lean_side})"
-        ) if sides_switched else None
-
-        comb_pick = {
-            "side": comb_pick_side,
-            "outcome": c_outcome,
-            "conviction": c_conviction,
-            "isConflict": sides_switched,
-            "conflictReason": c_conflict_reason,
-            "sharpCount": c_sharp_cnt,
-            "candidateCount": c_cand_cnt,
-            "smartCount": c_cnt,
-            "smartCapital": round(c_cap, 2),
-            "avgEntry": round((avg_smart_entry_yes if comb_pick_side == "YES" else avg_smart_entry_no) or 0, 3),
-            "currentPrice": round(p0 if comb_pick_side == "YES" else p1, 3),
-            "slippageCents": c_slip_cents,
-            "verdict": c_verdict,
-        }
-
-    # Primary default pick
-    pick = sharp_pick or comb_pick
-
-    tail_verdict = (pick or {}).get("verdict") or "NO SMART MONEY DETECTED: Order book currently led by casuals / market makers."
-    tail_verdict_key = "SPLIT_CONSENSUS" if sides_switched else ("SMART_PICK" if pick else "NO_SMART_CONSENSUS")
-    slip_yes_cents = round((p0 - (avg_smart_entry_yes or p0)) * 100, 1) if avg_smart_entry_yes is not None else None
-    slip_no_cents = round((p1 - (avg_smart_entry_no or p1)) * 100, 1) if avg_smart_entry_no is not None else None
-
-    tail_intelligence = {
-        "pick": pick,
-        "sharpCountYes": sharp_count_yes,
-        "sharpCountNo": sharp_count_no,
-        "candidateCountYes": cand_count_yes,
-        "candidateCountNo": cand_count_no,
-        "smartCountYes": smart_count_yes,
-        "smartCountNo": smart_count_no,
-        "sharpCapitalYes": round(sharp_cap_yes, 2),
-        "sharpCapitalNo": round(sharp_cap_no, 2),
-        "smartCapitalYes": round(smart_cap_yes, 2),
-        "smartCapitalNo": round(smart_cap_no, 2),
-        "avgSharpEntryYes": avg_entry_yes,
-        "avgSharpEntryNo": avg_entry_no,
-        "avgSmartEntryYes": avg_smart_entry_yes,
-        "avgSmartEntryNo": avg_smart_entry_no,
-        "currentPriceYes": round(p0, 3),
-        "currentPriceNo": round(p1, 3),
-        "slippageYesCents": slip_yes_cents,
-        "slippageNoCents": slip_no_cents,
-        "tailVerdict": tail_verdict_key,
-        "verdict": tail_verdict,
-        "tailableCount": len(tail_wallets),
-        "tailableWallets": tail_wallets,
-    }
+    # Pick generation is shared by fresh results and cached responses.
+    sharp_pick = comb_pick = pick = None
+    tail_verdict = "No directional smart consensus in the available results"
+    tail_intelligence = {}
 
     # Deep Alpha: smart-money lean disagrees with the market-implied favorite
     market_fav = "YES" if p0 > 0.5 else ("NO" if p0 < 0.5 else "NEUTRAL")
@@ -593,7 +458,8 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
         "strengthNo": comb_strength_no,
         "sharpCount": sharp_count,
         "candidateCount": candidate_count,
-        "smartCount": sharp_count + candidate_count,
+        "underdogCount": underdog_count,
+        "smartCount": sharp_count + candidate_count + underdog_count,
         "smartCapitalYes": round(comb_cap_yes, 2),
         "smartCapitalNo": round(comb_cap_no, 2),
         "alpha": comb_alpha,
@@ -642,6 +508,7 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
         "configSignature": config_signature,
         "coverage": "Sample of top holders; not all market capital",
         "coverageDetail": coverage_detail,
+        "sampledHolderShares": [sum(cap["yesShares"] for _, cap in ranked), sum(cap["noShares"] for _, cap in ranked)],
         "isPartial": bool(pending or failed),
         "pendingWallets": pending,
         "cachedWallets": cached,
@@ -679,7 +546,7 @@ def _market_result(market, ranked, profiles, config_signature, pending=0, failed
         "updatedAt": datetime.now(timezone.utc).isoformat(),
     }
 
-    return analysis
+    return refresh_analysis_prices(analysis, market)
 
 
 def _hold_label(ratio):
@@ -687,7 +554,7 @@ def _hold_label(ratio):
         return "Unknown holding ratio"
     pct = int(round(ratio * 100))
     if ratio >= 0.90:
-        return f"High conviction sharp · {pct}% holds to resolution"
+        return f"{pct}% held or cashed out at 97¢+"
     if ratio >= 0.60:
         return f"Moderate holding · {pct}% holds to resolution"
     return f"Active trader · exits early {100 - pct}% of the time"
@@ -699,13 +566,13 @@ def compute_pick_from_doc(doc, market=None, mode="combined"):
     wallets = doc.get("topWallets") or []
     if not wallets:
         if mode == "sharp":
-            return doc.get("sharpPick") or doc.get("pick")
+            return doc.get("sharpPick")
         return (doc.get("combined") or {}).get("pick") or doc.get("pick") or (doc.get("tailIntelligence") or {}).get("pick")
 
-    prices = doc.get("prices") or (market.get("prices") if market else [0.5, 0.5])
+    prices = (market or {}).get("prices") or doc.get("prices") or [0.5, 0.5]
     p0 = prices[0] if len(prices) > 0 else 0.5
     p1 = prices[1] if len(prices) > 1 else (1.0 - p0)
-    outcomes = doc.get("outcomes") or (market.get("outcomes") if market else ["Yes", "No"])
+    outcomes = (market or {}).get("outcomes") or doc.get("outcomes") or ["Yes", "No"]
     name_yes = outcomes[0] if outcomes else "Yes"
     name_no = outcomes[1] if len(outcomes) > 1 else "No"
 
@@ -726,13 +593,16 @@ def compute_pick_from_doc(doc, market=None, mode="combined"):
     cand_yes = [w for w in wallets if w.get("isCandidate") and w.get("side") == "YES" and w.get("directionalCapital", 0) > 0]
     cand_no = [w for w in wallets if w.get("isCandidate") and w.get("side") == "NO" and w.get("directionalCapital", 0) > 0]
 
+    under_yes = [w for w in wallets if w.get("isUnderdog") and w.get("side") == "YES" and w.get("directionalCapital", 0) > 0]
+    under_no = [w for w in wallets if w.get("isUnderdog") and w.get("side") == "NO" and w.get("directionalCapital", 0) > 0]
+
     if mode == "sharp":
         pick_wallets_yes = sharp_yes
         pick_wallets_no = sharp_no
         effective_lean = lean_side
     else:
-        pick_wallets_yes = sharp_yes + cand_yes
-        pick_wallets_no = sharp_no + cand_no
+        pick_wallets_yes = sharp_yes + cand_yes + under_yes
+        pick_wallets_no = sharp_no + cand_no + under_no
         effective_lean = comb_lean_side
 
     cap_yes = sum(w["directionalCapital"] for w in pick_wallets_yes)
@@ -761,9 +631,14 @@ def compute_pick_from_doc(doc, market=None, mode="combined"):
     if not pick_side:
         return None
 
-    slip = (p0 - avg_entry_yes) if pick_side == "YES" and avg_entry_yes else ((p1 - avg_entry_no) if avg_entry_no else 0)
+    entry = avg_entry_yes if pick_side == "YES" else avg_entry_no
+    chosen_capital = cap_yes if pick_side == "YES" else cap_no
+    known_capital = sum(c_yes_list) if pick_side == "YES" else sum(c_no_list)
+    entry_coverage = min(1., known_capital / chosen_capital) if chosen_capital else 0
+    slip = ((p0 if pick_side == "YES" else p1) - entry) if entry is not None and entry_coverage >= 1 - 1e-6 else None
     sharp_cnt = len(sharp_yes) if pick_side == "YES" else len(sharp_no)
     cand_cnt = len(cand_yes) if pick_side == "YES" else len(cand_no)
+    under_cnt = (len(under_yes) if pick_side == "YES" else len(under_no)) if mode != "sharp" else 0
     smart_cnt = len(pick_wallets_yes) if pick_side == "YES" else len(pick_wallets_no)
     smart_cap = cap_yes if pick_side == "YES" else cap_no
     chosen_name = name_yes if pick_side == "YES" else name_no
@@ -771,28 +646,28 @@ def compute_pick_from_doc(doc, market=None, mode="combined"):
     if sides_switched:
         conviction = "CONFLICT"
         if comb_lean_side == "NEUTRAL":
-            verdict = f"SPLIT CONSENSUS: Sharps favor {chosen_name} ({round(doc.get('strengthYes' if pick_side == 'YES' else 'strengthNo') or 100)}%), but Candidates pull net smart lean into a dead heat ({comb.get('netLean')}%). No solid pick."
+            verdict = f"SPLIT CONSENSUS: Sharps favor {chosen_name} ({round(doc.get('strengthYes' if pick_side == 'YES' else 'strengthNo') or 100)}%), but Candidates and Underdogs pull net smart lean into a dead heat ({comb.get('netLean')}%). No solid pick."
         else:
-            verdict = f"SPLIT CONSENSUS: Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates ({comb_lean_side}). No solid pick."
-    elif slip > 0.07:
+            verdict = f"SPLIT CONSENSUS: Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates + Underdogs ({comb_lean_side}). No solid pick."
+    elif slip is not None and slip > 0.07:
         conviction = "CAUTION"
         verdict = f"CAUTION: Line moved to {round((p0 if pick_side == 'YES' else p1)*100)}¢"
     elif (sharp_cnt >= 1 and (smart_cnt >= 2 or smart_cap >= 1500)) or (mode == "sharp" and sharp_cnt >= 1 and smart_cap >= 1500):
         conviction = "HIGH"
-        verdict = f"Smart Money ({sharp_cnt} Sharp, {cand_cnt} Candidate) backing {chosen_name} (${round(smart_cap):,})"
+        verdict = f"Smart Money ({sharp_cnt} Sharp, {cand_cnt if mode != 'sharp' else 0} Candidate, {under_cnt} Underdog) backing {chosen_name} (${round(smart_cap):,})"
     elif smart_cnt >= 1:
         conviction = "MODERATE"
-        verdict = f"Smart Money ({sharp_cnt} Sharp, {cand_cnt} Candidate) backing {chosen_name} (${round(smart_cap):,})"
+        verdict = f"Smart Money ({sharp_cnt} Sharp, {cand_cnt if mode != 'sharp' else 0} Candidate, {under_cnt} Underdog) backing {chosen_name} (${round(smart_cap):,})"
     else:
         conviction = "LEAN"
         verdict = f"Smart lean on {chosen_name}"
 
-    slip_cents = round(slip * 100, 1) if (avg_entry_yes if pick_side == "YES" else avg_entry_no) is not None else None
+    slip_cents = round(slip * 100, 1) if slip is not None else None
 
     conflict_reason = (
-        f"Net smart lean deadlocks into a split ({comb.get('netLean')}%) when Candidates oppose Sharps ({lean_side})"
+        f"Net smart lean deadlocks into a split ({comb.get('netLean')}%) when Candidates and Underdogs oppose Sharps ({lean_side})"
         if comb_lean_side == "NEUTRAL"
-        else f"Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates ({comb_lean_side})"
+        else f"Net smart lean switches sides between Sharps ({lean_side}) and Sharps + Candidates + Underdogs ({comb_lean_side})"
     ) if sides_switched else None
 
     return {
@@ -802,14 +677,120 @@ def compute_pick_from_doc(doc, market=None, mode="combined"):
         "isConflict": sides_switched,
         "conflictReason": conflict_reason,
         "sharpCount": sharp_cnt,
-        "candidateCount": cand_cnt,
+        "candidateCount": cand_cnt if mode != "sharp" else 0,
+        "underdogCount": under_cnt,
         "smartCount": smart_cnt,
         "smartCapital": round(smart_cap, 2),
-        "avgEntry": round((avg_entry_yes if pick_side == "YES" else avg_entry_no) or 0, 3),
+        "avgEntry": entry,
+        "entryCoverage": round(entry_coverage, 4),
+        "entryStatus": "known" if entry_coverage >= 1 - 1e-6 else "partial" if entry is not None else "unknown",
         "currentPrice": round(p0 if pick_side == "YES" else p1, 3),
         "slippageCents": slip_cents,
         "verdict": verdict,
     }
+
+
+def refresh_analysis_prices(doc, market=None):
+    """Revalue saved holder quantities using the available market snapshot.
+
+    Qualification is preserved; quantities remain observations from updatedAt.
+    Strength, counts, picks and tail comparisons share the same cohorts.
+    """
+    result = copy.deepcopy(doc)
+    prices = (market or {}).get("prices") or result.get("prices") or [.5, .5]
+    result["prices"] = prices
+    if (market or {}).get("outcomes"):
+        result["outcomes"] = market["outcomes"]
+    rows = result.get("topWallets") or []
+    for row in rows:
+        idx = 0 if row.get("side") == "YES" else 1
+        current = _f(prices[idx])
+        if row.get("directionalShares") is not None:
+            row["directionalCapital"] = round(row["directionalShares"] * current, 2)
+        if "yesShares" in row and "noShares" in row:
+            row["capital"] = round(row["yesShares"] * _f(prices[0]) + row["noShares"] * _f(prices[1]), 2)
+        row["currentPrice"] = current
+        row["entryPrice"] = _entry_price(row, row.get("side"))
+        row["slippageCents"] = _slippage(row["entryPrice"], current)
+        row["tailStatus"] = _tail_status(row["slippageCents"]) if any(row.get(k) for k in ("qualified", "isCandidate", "isUnderdog")) else None
+
+    directional = [w for w in rows if w.get("directionalCapital", 0) > 0]
+    sharps = [w for w in directional if w.get("qualified")]
+    candidates = [w for w in directional if w.get("isCandidate") and not w.get("qualified")]
+    underdogs = [w for w in directional if w.get("isUnderdog") and not w.get("qualified") and not w.get("isCandidate")]
+    smart = sharps + candidates + underdogs
+
+    def weight(w):
+        return w.get("signalWeight", (_f(w.get("smartScore")) / 100 if w.get("qualified") else .5 if w.get("isCandidate") else .35))
+
+    def metrics(cohort):
+        raw = [sum(w["directionalCapital"] for w in cohort if w["side"] == side) for side in ("YES", "NO")]
+        weighted = [sum(w["directionalCapital"] * weight(w) for w in cohort if w["side"] == side) for side in ("YES", "NO")]
+        total = sum(weighted)
+        strength = [round(100 * v / total, 1) if total else None for v in weighted]
+        net = round(strength[0] - strength[1], 1) if total else None
+        lean = "UNAVAILABLE" if net is None else "YES" if net > NEUTRAL_BAND else "NO" if net < -NEUTRAL_BAND else "NEUTRAL"
+        fav = "YES" if prices[0] > .5 else "NO" if prices[0] < .5 else "NEUTRAL"
+        divergent = lean in {"YES", "NO"} and fav in {"YES", "NO"} and lean != fav and max(prices) >= .6
+        return dict(smartCapitalYes=round(raw[0], 2), smartCapitalNo=round(raw[1], 2),
+            strengthYes=strength[0], strengthNo=strength[1], netLean=net, leanSide=lean,
+            alpha=dict(divergent=divergent, side=lean if divergent else None,
+                marketFavorite=fav, favPrice=round(max(prices), 3), edge=abs(net) if divergent else 0))
+
+    result.update(metrics(sharps), sharpCount=len(sharps), candidateCount=len(candidates), underdogCount=len(underdogs))
+    categories = {}
+    for row in rows:
+        categories[row["primary"]] = categories.get(row["primary"], 0) + row.get("capital", 0)
+    total_capital = sum(categories.values())
+    result["capitalDistribution"] = sorted([{"category":key, "capital":round(value, 2),
+        "pct":round(value / total_capital * 100, 1) if total_capital else 0}
+        for key, value in categories.items()], key=lambda row:row["capital"], reverse=True)
+    hold_rows = [w for w in rows if w.get("capitalHoldRatio") is not None]
+    hold_capital = sum(w.get("capital", 0) for w in hold_rows)
+    hold_ratio = sum(w["capitalHoldRatio"] * w.get("capital", 0) for w in hold_rows) / hold_capital if hold_capital else None
+    result["holdToResolution"] = {"ratio":round(hold_ratio, 3) if hold_ratio is not None else None,
+        "label":_hold_label(hold_ratio), "estimated":True,
+        "policy":"Held through resolution or qualifying cashouts at 97 cents or above"}
+    coverage = result.get("coverageDetail") or {}
+    qualified_capital = sum(w["directionalCapital"] for w in sharps)
+    sampled_shares = result.get("sampledHolderShares")
+    if sampled_shares:
+        coverage["sampledCapital"] = round(sampled_shares[0] * prices[0] + sampled_shares[1] * prices[1], 2)
+    sampled_capital = coverage.get("sampledCapital", 0)
+    coverage.update(qualifiedCapital=round(qualified_capital, 2),
+        qualifiedCapitalPct=round(qualified_capital / sampled_capital * 100, 1) if sampled_capital else 0,
+        holdingCapitalPct=round(hold_capital / sampled_capital * 100, 1) if sampled_capital else 0)
+    result["coverageDetail"] = coverage
+    result["combined"] = {**(result.get("combined") or {}), **metrics(smart),
+        "sharpCount":len(sharps), "candidateCount":len(candidates), "underdogCount":len(underdogs), "smartCount":len(smart)}
+    result["sharpPick"] = compute_pick_from_doc(result, mode="sharp")
+    result["combined"]["pick"] = compute_pick_from_doc(result, mode="combined")
+    result["pick"] = result["sharpPick"] or result["combined"]["pick"]
+    result["tailVerdict"] = (result["pick"] or {}).get("verdict") or "No directional smart consensus in the available results"
+    tail = result["tailIntelligence"] = {}
+    for side in ("YES", "NO"):
+        suffix = side.title()
+        side_smart = [w for w in smart if w["side"] == side]
+        known = [w for w in side_smart if w.get("entryPrice") is not None]
+        capital = sum(w["directionalCapital"] for w in side_smart)
+        known_capital = sum(w["directionalCapital"] for w in known)
+        avg = round(sum(w["entryPrice"] * w["directionalCapital"] for w in known) / known_capital, 3) if known_capital else None
+        side_sharp = [w for w in sharps if w["side"] == side]
+        sharp_known = [w for w in side_sharp if w.get("entryPrice") is not None]
+        sharp_known_cap = sum(w["directionalCapital"] for w in sharp_known)
+        sharp_avg = round(sum(w["entryPrice"] * w["directionalCapital"] for w in sharp_known) / sharp_known_cap, 3) if sharp_known_cap else None
+        tail.update({"smartCount"+suffix:len(side_smart), "sharpCount"+suffix:len(side_sharp),
+            "candidateCount"+suffix:sum(w in candidates for w in side_smart),
+            "underdogCount"+suffix:sum(w in underdogs for w in side_smart),
+            "smartCapital"+suffix:round(capital, 2), "sharpCapital"+suffix:round(sum(w["directionalCapital"] for w in side_sharp), 2),
+            "avgSmartEntry"+suffix:avg, "avgSharpEntry"+suffix:sharp_avg,
+            "currentPrice"+suffix:prices[0 if side == "YES" else 1],
+            "slippage"+suffix+"Cents":_slippage(avg, prices[0 if side == "YES" else 1]) if capital and known_capital >= capital - 1e-6 else None})
+    tailable = [w for w in smart if w.get("tailStatus") in {"BETTER_PRICE", "PRIME_TAIL", "ACCEPTABLE"}]
+    tail.update(pick=result["pick"], verdict=result["tailVerdict"], tailableCount=len(tailable), tailableWallets=tailable)
+    result["intel"] = _fallback({**result, "holdRatio":result.get("holdToResolution", {}).get("ratio"),
+        "topCategories":result.get("capitalDistribution", [])[:3]})
+    return result
 
 
 def analysis_summary(doc):
@@ -824,6 +805,7 @@ def analysis_summary(doc):
         "leanSide": doc.get("leanSide"),
         "sharpCount": doc.get("sharpCount", 0),
         "candidateCount": doc.get("candidateCount", 0),
+        "underdogCount": doc.get("underdogCount", 0),
         "smartCount": (doc.get("sharpCount") or 0) + (doc.get("candidateCount") or 0),
         "smartCapitalYes": doc.get("smartCapitalYes", 0),
         "smartCapitalNo": doc.get("smartCapitalNo", 0),

@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
-os.environ.setdefault("DB_NAME", "powerplay_tests")
+os.environ['MONGO_URL'] = 'mongodb://127.0.0.1:27017'
+os.environ['DB_NAME'] = 'powerplay_tests'
 
 
 @pytest.fixture(autouse=True)
