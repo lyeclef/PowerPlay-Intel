@@ -526,7 +526,7 @@ export const MarketDetail = ({ event, initialId, open, onOpenChange, initialMode
 
                       <div className="label-mono text-[9px] text-[#FFB020] mb-0.5">
 
-                        DEEP ALPHA · {isCombined ? "SHARPS + CANDIDATES + UNDERDOGS" : "SMART MONEY"} vs MARKET
+                        DEEP ALPHA · {isCombined ? "ALL CANDIDATES" : "SMART MONEY"} vs MARKET
 
                       </div>
 
@@ -602,7 +602,7 @@ export const MarketDetail = ({ event, initialId, open, onOpenChange, initialMode
 
                 >
 
-                  <Users size={11} /> SHARPS + CANDIDATES + UNDERDOGS ({(a?.sharpCount ?? 0) + (a?.candidateCount ?? 0) + (a?.underdogCount ?? 0)})
+                  <Users size={11} /> ALL CANDIDATES ({(a?.sharpCount ?? 0) + (a?.candidateCount ?? 0) + (a?.underdogCount ?? 0)})
 
                 </button>
 
@@ -618,7 +618,7 @@ export const MarketDetail = ({ event, initialId, open, onOpenChange, initialMode
 
               <div className="panel p-4">
 
-                <SectionLabel>{isCombined ? "Smart Money Capital Share (Sharps + Candidates + Underdogs)" : "Sharp Money Capital Share"}</SectionLabel>
+                <SectionLabel>{isCombined ? "Smart Money Capital Share (All Candidates)" : "Sharp Money Capital Share"}</SectionLabel>
 
                 <SmartMeter
 

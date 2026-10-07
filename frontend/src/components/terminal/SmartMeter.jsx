@@ -48,7 +48,7 @@ export const SmartMeter = ({
 
   const noName = (outcomes?.[1] || "NO").toUpperCase();
 
-  const label = mode === "combined" ? "NET SMART LEAN (SHARPS + CANDIDATES + UNDERDOGS)" : "NET ALPHA LEAN (SHARPS)";
+  const label = mode === "combined" ? "NET SMART LEAN (ALL CANDIDATES)" : "NET ALPHA LEAN (SHARPS)";
 
   return (
 

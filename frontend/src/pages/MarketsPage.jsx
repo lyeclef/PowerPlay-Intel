@@ -382,7 +382,7 @@ export default function MarketsPage() {
 
         >
 
-          <Users size={11} /> SHARPS + CANDIDATES + UNDERDOGS
+          <Users size={11} /> ALL CANDIDATES
 
         </button>
 
