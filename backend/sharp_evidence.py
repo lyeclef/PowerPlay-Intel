@@ -10,7 +10,7 @@ import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
 
-RULE_VERSION = "sports-signals-2026-10-07.2"
+RULE_VERSION = "sports-signals-2026-10-09.1"
 QUALIFIED = {"SHARP", "PROVEN_SHARP"}
 DAY = 86400
 EPS = 1e-6
@@ -261,17 +261,24 @@ def automation_evidence(activity, records, cfg):
             intense_days += 1
     acquired = sum(r.get("acquiredCost", 0) for r in records)
     hedge_ratio = sum(r.get("hedgedCost", 0) for r in records) / acquired if acquired else 0
-    hedged_markets = sum(r.get("hedgedCost", 0) > r.get("acquiredCost", 0) * .5 for r in records)
+    hedged_markets = sum(r.get("hedgedCost", 0) >= r.get("acquiredCost", 0) * .4 for r in records)
     buys = sum(num(e.get("usdcSize")) for e in trades if e.get("side") == "BUY")
     sells = sum(num(e.get("usdcSize")) for e in trades if e.get("side") == "SELL")
     turnover = sells / buys if buys else 0
+    total_distinct_markets = len({e["market"] for e in ordered})
+    daily_episodes = len(ordered) / max(1, len(by_day)) if by_day else 0
     groups = []
     if max(rapid_days, mechanical_days) >= cfg["minDays"]:
         groups.append({"group": "timing", "reason": f"Repeated rapid or regular episodes on {max(rapid_days, mechanical_days)} days"})
-    if hedge_ratio >= cfg["hedgedFraction"] and hedged_markets >= cfg["minHedgedMarkets"] and turnover >= .5:
+    hedged_fraction_cutoff = cfg.get("hedgedFraction", 0.50)
+    if hedge_ratio >= hedged_fraction_cutoff and hedged_markets >= cfg["minHedgedMarkets"] and turnover >= .5:
         groups.append({"group": "inventory", "reason": f"{hedge_ratio:.0%} paired acquisition cost with repeated two-sided turnover"})
+    elif hedge_ratio >= max(0.40, hedged_fraction_cutoff - 0.10) and hedged_markets >= cfg["minHedgedMarkets"]:
+        groups.append({"group": "inventory", "reason": f"{hedge_ratio:.0%} paired acquisition cost across {hedged_markets} markets indicates hedged inventory"})
     if intense_days >= cfg["minDays"]:
         groups.append({"group": "distribution", "reason": f"High episode intensity across many markets on {intense_days} days"})
+    elif intense_days >= 1 and daily_episodes >= cfg["intenseEpisodes"] and total_distinct_markets >= cfg["intenseMarkets"]:
+        groups.append({"group": "distribution", "reason": f"Extreme episode velocity ({len(ordered)} episodes, avg {daily_episodes:.0f}/day across {total_distinct_markets} markets on {len(by_day)} active days)"})
     # Coordination is descriptive until repeated patterns span distinct days.
     bursts = defaultdict(set)
     for e in ordered:
@@ -280,11 +287,16 @@ def automation_evidence(activity, records, cfg):
     if len(coordinated_days) >= cfg["minDays"]:
         groups.append({"group": "coordination", "reason": "Repeated same-size cross-market bursts on multiple days; shared news remains a possible cause"})
     incentives = sum(num(e.get("usdcSize")) for e in activity if e.get("type") in {"REWARD", "MAKER_REBATE", "TAKER_REBATE"})
+    min_incentives = cfg.get("minIncentives", 250.0)
+    if incentives >= min_incentives and len(episodes) >= cfg["minDailyEpisodes"]:
+        groups.append({"group": "liquidity_rewards", "reason": f"${incentives:,.2f} in maker rebates with active trading indicates automated liquidity provisioning"})
     risk = "high" if len(groups) >= 2 else ("uncertain" if groups else "low_observed")
+    mm_by_hedging = (hedge_ratio >= hedged_fraction_cutoff and hedged_markets >= cfg["minHedgedMarkets"]) or (hedge_ratio >= 0.40 and hedged_markets >= cfg["minHedgedMarkets"])
+    mm_by_incentives = incentives >= min_incentives and len(episodes) >= cfg["minDailyEpisodes"]
     return {"risk": risk, "groups": groups, "estimatedEpisodes": len(episodes),
         "activeDays": len(by_day), "rapidDays": rapid_days, "intenseDays": intense_days,
         "hedgedCapitalRatio": round(hedge_ratio, 4), "turnoverRatio": round(turnover, 4),
-        "marketMakerStyle": hedge_ratio >= cfg["hedgedFraction"] and hedged_markets >= cfg["minHedgedMarkets"],
+        "marketMakerStyle": bool(mm_by_hedging or mm_by_incentives),
         "incentiveIncome": round(incentives, 2),
         "note": "Public fills only. Partial fills are grouped into estimated episodes. Low observed risk does not verify a human; hidden hedges and private cancellations are unobserved."}
 

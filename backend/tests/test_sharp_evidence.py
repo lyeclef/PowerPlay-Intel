@@ -320,6 +320,31 @@ def test_rewards_alone_never_prove_automation():
     assert result["incentiveIncome"] == 10000
 
 
+def test_burst_episode_velocity_and_maker_rebates_flags_probable_bot():
+    cfg = config.get_config()["automation"]
+    trades = []
+    for day in range(2):
+        for i in range(250):
+            e = trade(cid=f"m{i % 25}")
+            e["timestamp"] = NOW - day * DAY - i * 10
+            trades.append(e)
+    rebates = [dict(type="MAKER_REBATE", usdcSize=1500, timestamp=NOW)]
+    result = automation_evidence(trades + rebates, [], cfg)
+    assert result["risk"] == "high"
+    assert result["marketMakerStyle"] is True
+    groups = {g["group"] for g in result["groups"]}
+    assert "distribution" in groups
+    assert "liquidity_rewards" in groups
+
+
+def test_hedged_inventory_without_sell_turnover_flags_market_maker():
+    cfg = config.get_config()["automation"]
+    records = [{"acquiredCost": 100, "hedgedCost": 45} for _ in range(12)]
+    result = automation_evidence([], records, cfg)
+    assert result["marketMakerStyle"] is True
+    assert any(g["group"] == "inventory" for g in result["groups"])
+
+
 def test_gamma_close_time_is_not_called_exact_resolution():
     m = normalize_metadata({"conditionId": "m", "closed": True, "umaResolutionStatus": "resolved", "closedTime": "2026-01-01T00:00:00Z", "outcomePrices": '["1", "0"]'}, NOW)
     assert m["resolvedAt"] == NOW

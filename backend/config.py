@@ -27,7 +27,7 @@ DEFAULTS = {
     "automation": {
         "minDays": 5, "minDailyEpisodes": 40, "rapidSeconds": 3,
         "rapidFraction": 0.50, "intenseEpisodes": 200, "intenseMarkets": 20,
-        "hedgedFraction": 0.50, "minHedgedMarkets": 10,
+        "hedgedFraction": 0.50, "minHedgedMarkets": 10, "minIncentives": 250.0,
     },
 }
 
