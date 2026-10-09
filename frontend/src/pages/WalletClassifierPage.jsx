@@ -501,7 +501,7 @@ const CategoryBreakdown = ({ rows }) => {
 
         <span className="label-mono text-[8px] text-retail">
 
-          winrate · W-L · net pnl
+          winrate · W-L · roi · net pnl
 
         </span>
 
@@ -550,6 +550,18 @@ const CategoryBreakdown = ({ rows }) => {
               <span className="mono text-[10px] text-fade w-10 text-right">
 
                 {r.wins}-{r.losses}
+
+              </span>
+
+              <span
+
+                className="mono text-[10px] font-medium w-12 text-right"
+
+                style={{ color: (r.roi || 0) >= 0 ? "#00E599" : "#FF3B5C" }}
+
+              >
+
+                {fmtSignedPct(r.roi)}
 
               </span>
 

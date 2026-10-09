@@ -358,6 +358,53 @@ def normalize_markets_from_events(events: list, category_id: str) -> list:
     return out
 
 
+def normalize_single_market(m: dict, category_id: str = "all") -> Optional[dict]:
+    """Normalize a single Gamma market dict (e.g. from /markets?condition_ids=...) into the standard market dict."""
+    if not m or not isinstance(m, dict):
+        return None
+    cond = m.get("conditionId") or m.get("id")
+    if not cond:
+        return None
+    events = m.get("events") or []
+    ev = events[0] if events and isinstance(events[0], dict) else {}
+    event_title = ev.get("title") or m.get("question") or ""
+    event_slug = ev.get("slug") or m.get("slug") or cond
+    event_icon = ev.get("icon") or ev.get("image") or m.get("icon") or m.get("image")
+    event_end = ev.get("endDate") or m.get("endDate")
+
+    outcomes = parse_json_field(m.get("outcomes"), [])
+    prices = parse_json_field(m.get("outcomePrices"), [])
+    tokens = parse_json_field(m.get("clobTokenIds"), [])
+    prices_f = [_to_float(p) for p in prices] if prices else [0.5, 0.5]
+    if len(prices_f) < 2:
+        prices_f = [0.5, 0.5]
+
+    question = m.get("question") or m.get("groupItemTitle") or event_title
+    return {
+        "id": cond,
+        "conditionId": cond,
+        "question": question,
+        "marketType": classify_market_type(
+            question, outcomes, m.get("groupItemTitle")
+        ),
+        "eventTitle": event_title,
+        "eventSlug": event_slug or cond,
+        "eventIcon": event_icon,
+        "slug": m.get("slug"),
+        "category": category_id,
+        "outcomes": outcomes,
+        "prices": prices_f,
+        "tokens": [str(t) for t in tokens],
+        "volume": _to_float(m.get("volumeNum") or m.get("volume")),
+        "liquidity": _to_float(m.get("liquidity")),
+        "endDate": m.get("endDate") or event_end,
+        "startDate": m.get("startDate") or ev.get("startDate"),
+        "gameStartTime": _norm_dt(m.get("gameStartTime") or ev.get("gameStartTime")),
+        "icon": m.get("icon") or event_icon,
+    }
+
+
+
 _TYPE_ORDER = {"moneyline": 0, "spread": 1, "total": 2, "prop": 3}
 
 _FAR_FUTURE = float("inf")

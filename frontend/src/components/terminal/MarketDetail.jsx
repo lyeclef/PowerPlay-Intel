@@ -380,7 +380,7 @@ export const MarketDetail = ({ event, initialId, open, onOpenChange, initialMode
 
         {isError && a && <p role="status" className="px-5 text-xs text-amber-300">Refresh unavailable. Saved results remain visible. <button className="underline" onClick={() => refetch()}>Retry connection</button></p>}
 
-        {isError && !a && !m ? (
+        {isError && !a ? (
 
           <QueryError onRetry={refetch} />
 

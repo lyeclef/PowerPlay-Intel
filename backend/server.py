@@ -26,6 +26,7 @@ from polymarket_client import (
     UpstreamError,
     group_by_event,
     normalize_markets_from_events,
+    normalize_single_market,
     pick_display_market,
 )
 from classifier import classify, smart_score, reconstruct_performance, WALLET_SCHEMA, _reliability
@@ -97,9 +98,46 @@ def _index_market(m):
     if not m or not isinstance(m, dict) or not m.get("id"):
         return
     _market_index[m["id"]] = m
-    if len(_market_index) > 300:
-        for k in list(_market_index.keys())[:50]:
+    if len(_market_index) > 3000:
+        for k in list(_market_index.keys())[:500]:
             _market_index.pop(k, None)
+
+
+async def _get_or_fetch_market(condition_id: str) -> dict | None:
+    market = _market_index.get(condition_id)
+    if market:
+        return market
+
+    for cat_id, entry in _markets_cache.items():
+        for m in entry.get("markets", []):
+            if m.get("id") == condition_id:
+                _index_market(m)
+                return m
+
+    try:
+        raw_list = await poly.market_metadata([condition_id])
+        if raw_list:
+            norm = normalize_single_market(raw_list[0])
+            if norm:
+                cat = categorize_market(norm.get("eventSlug"), norm.get("question"))
+                norm["category"] = cat.lower() if cat else "all"
+                _index_market(norm)
+                return norm
+    except Exception as exc:
+        logger.warning("Failed to fetch market metadata for %s: %s", condition_id, exc)
+
+    for cat in ("all", "cfb", "nfl", "nba", "mlb", "soccer", "esports"):
+        if cat not in _markets_cache:
+            try:
+                await _fetch_flat_markets(cat, 40)
+                market = _market_index.get(condition_id)
+                if market:
+                    return market
+            except Exception:
+                pass
+
+    return None
+
 
 
 def trim_memory():
@@ -673,13 +711,7 @@ async def search(q: str = Query(..., max_length=200), limit: int = Query(20, ge=
 async def market_detail(condition_id: str, retry: bool = False):
     doc = await db.markets_analysis.find_one({"conditionId":condition_id,
         "schemaVersion":ANALYSIS_SCHEMA, "configSignature":tuning_config.signature()}, {"_id":0})
-    market = _market_index.get(condition_id)
-    if market is None and doc is None:
-        for cat in ("esports", "all"):
-            await _fetch_flat_markets(cat, 40)
-            market = _market_index.get(condition_id)
-            if market:
-                break
+    market = await _get_or_fetch_market(condition_id)
     if market is None:
         if doc:
             return {"market":None, "analysis":doc, "profiling":market_jobs.status(condition_id, doc)}

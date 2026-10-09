@@ -10,7 +10,7 @@ import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
 
-RULE_VERSION = "sports-signals-2026-10-09.1"
+RULE_VERSION = "sports-signals-2026-10-09.2"
 QUALIFIED = {"SHARP", "PROVEN_SHARP"}
 DAY = 86400
 EPS = 1e-6
@@ -369,14 +369,14 @@ def assess_scope(records, scope, as_of, complete, cfg, frozen=None):
         and not r.get("void") and cohort_time(r) <= as_of]
     recent = [r for r in resolved if cohort_time(r) >= as_of - sh["windowDays"] * DAY]
     extended = [r for r in resolved if cohort_time(r) >= as_of - sh["extendedDays"] * DAY]
-    event_count = lambda rows: len({r.get("eventId") for r in rows if r.get("eventId") and r.get("settled")})
+    event_count = lambda rows: len({(r.get("eventId") or r["conditionId"]) for r in rows if r.get("settled")})
     window = sh["windowDays"]
     if event_count(recent) < sh["minEvents"] or event_count(extended) >= proven["minEvents"]:
         recent, window = extended, sh["extendedDays"]
     hold = holding_bounds(recent, complete)
     grouped = defaultdict(list)
     for r in recent:
-        grouped[str(r.get("eventId") or "unknown:" + r["conditionId"])].append(r)
+        grouped[str(r.get("eventId") or r["conditionId"])].append(r)
     events = []
     for eid, rows in grouped.items():
         usable = [r for r in rows if r.get("settled") and r.get("netPnl") is not None]
@@ -387,7 +387,7 @@ def assess_scope(records, scope, as_of, complete, cfg, frozen=None):
             "firstEntryAt":min((r.get("firstEntryAt") or cohort_time(r)) for r in rows),
             "roi":pnl / invested if measured else None, "pnl":pnl, "invested":invested, "rows":rows})
     events.sort(key=lambda e:(e["t"], e["id"]))
-    measured = [e for e in events if e["roi"] is not None and not e["id"].startswith("unknown:")]
+    measured = [e for e in events if e["roi"] is not None]
     n = len(measured)
     first_entries = [e["firstEntryAt"] for e in measured]
     span = (max(first_entries) - min(first_entries)) / DAY if first_entries else 0
@@ -476,6 +476,10 @@ def qualified_market_scope(profile, category):
             c_wr = cat_scope.get("winrate")
             if c_events >= 3 and (c_profit < 0 or (c_wr is not None and c_wr < 0.50)):
                 return None
+        for cb in profile.get("categoryBreakdown") or []:
+            if cb.get("category") == category:
+                if cb.get("bets", 0) >= 3 and (cb.get("netPnl", 0) < 0 or (cb.get("winrate") is not None and cb.get("winrate") < 0.50)):
+                    return None
     return "Sports" if "Sports" in qualified else (category if category in qualified else None)
 
 
@@ -501,6 +505,10 @@ def candidate_market_scope(profile, category):
             c_wr = cat_scope.get("winrate")
             if c_events >= 3 and (c_profit < 0 or (c_wr is not None and c_wr < 0.50)):
                 return None
+        for cb in profile.get("categoryBreakdown") or []:
+            if cb.get("category") == category:
+                if cb.get("bets", 0) >= 3 and (cb.get("netPnl", 0) < 0 or (cb.get("winrate") is not None and cb.get("winrate") < 0.50)):
+                    return None
 
     if cand_scopes:
         if "Sports" in cand_scopes:
@@ -539,6 +547,10 @@ def underdog_market_scope(profile, category):
             c_profit = cat_scope.get("profit", 0)
             if c_events >= 3 and c_profit < 0:
                 return None
+        for cb in profile.get("categoryBreakdown") or []:
+            if cb.get("category") == category:
+                if cb.get("bets", 0) >= 3 and cb.get("netPnl", 0) < 0:
+                    return None
 
     if underdog_scopes:
         if "Sports" in underdog_scopes:
